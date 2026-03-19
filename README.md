@@ -201,7 +201,7 @@ app/src/main/java/com/apk/claw/android/
 
 ```bash
 # Clone the repository
-git clone https://github.com/user/ApkClaw.git
+git clone https://github.com/apkclaw-team/ApkClaw.git
 cd ApkClaw
 
 # Debug build
