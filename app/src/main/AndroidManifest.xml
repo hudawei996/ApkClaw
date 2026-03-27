@@ -19,6 +19,8 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
     <!-- Device features -->
     <uses-feature
@@ -74,6 +76,11 @@
             android:name=".ui.web.WebActivity"
             android:exported="false"
             android:screenOrientation="portrait" />
+        <activity
+            android:name=".tool.impl.ClipboardReaderActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.Transparent" />
 
         <service
             android:name=".service.ClawAccessibilityService"

@@ -46,7 +46,7 @@ public class LangChain4jToolBridge {
      * Converts a BaseTool to a LangChain4j ToolSpecification.
      */
     private static ToolSpecification toSpecification(BaseTool tool) {
-        List<ToolParameter> params = tool.getParameters();
+        List<ToolParameter> params = tool.getParametersWithWaitAfter();
 
         if (params.isEmpty()) {
             return ToolSpecification.builder()

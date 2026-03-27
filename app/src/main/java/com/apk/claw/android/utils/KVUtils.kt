@@ -30,6 +30,10 @@ object KVUtils {
     const val KEY_DISCORD_BOT_TOKEN = "DEFAULT_DISCORD_BOT_TOKEN"
     // Telegram 机器人配置
     const val KEY_TELEGRAM_BOT_TOKEN = "DEFAULT_TELEGRAM_BOT_TOKEN"
+    // 微信 iLink Bot 配置
+    const val KEY_WECHAT_BOT_TOKEN = "DEFAULT_WECHAT_BOT_TOKEN"
+    const val KEY_WECHAT_API_BASE_URL = "DEFAULT_WECHAT_API_BASE_URL"
+    const val KEY_WECHAT_UPDATES_CURSOR = "DEFAULT_WECHAT_UPDATES_CURSOR"
 
     private lateinit var mmkv: MMKV
 
@@ -171,6 +175,14 @@ object KVUtils {
     // ==================== Telegram 机器人配置 ====================
     fun getTelegramBotToken(): String = getString(KEY_TELEGRAM_BOT_TOKEN, "")
     fun setTelegramBotToken(value: String) = putString(KEY_TELEGRAM_BOT_TOKEN, value)
+
+    // ==================== 微信 iLink Bot 配置 ====================
+    fun getWechatBotToken(): String = getString(KEY_WECHAT_BOT_TOKEN, "")
+    fun setWechatBotToken(value: String) = putString(KEY_WECHAT_BOT_TOKEN, value)
+    fun getWechatApiBaseUrl(): String = getString(KEY_WECHAT_API_BASE_URL, "")
+    fun setWechatApiBaseUrl(value: String) = putString(KEY_WECHAT_API_BASE_URL, value)
+    fun getWechatUpdatesCursor(): String = getString(KEY_WECHAT_UPDATES_CURSOR, "")
+    fun setWechatUpdatesCursor(value: String) = putString(KEY_WECHAT_UPDATES_CURSOR, value)
 
     // ==================== 局域网配置服务 ====================
     private const val KEY_CONFIG_SERVER_ENABLED = "KEY_CONFIG_SERVER_ENABLED"

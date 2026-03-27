@@ -40,13 +40,19 @@ public class GetScreenInfoTool extends BaseTool {
 
     public static final String SYSTEM_DIALOG_BLOCKED = "__SYSTEM_DIALOG_BLOCKED__";
 
+    /**
+     * 切换为完整节点树模式（包含所有节点和全部属性，用于调试）。
+     * false = 精简模式（默认，省 token）；true = 完整模式。
+     */
+    public static boolean useFullTree = false;
+
     @Override
     public ToolResult execute(Map<String, Object> params) {
         ClawAccessibilityService service = ClawAccessibilityService.getInstance();
         if (service == null) {
             return ToolResult.error("Accessibility service is not running");
         }
-        String tree = service.getScreenTree();
+        String tree = useFullTree ? service.getScreenTreeFull() : service.getScreenTree();
         if (tree == null) {
             return ToolResult.error(SYSTEM_DIALOG_BLOCKED);
         }

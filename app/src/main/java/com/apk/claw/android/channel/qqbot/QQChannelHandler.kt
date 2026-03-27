@@ -150,6 +150,45 @@ class QQChannelHandler(
         else                                         -> QBotApiClient.FILE_TYPE_FILE
     }
 
+    override fun getLastSenderId(): String? {
+        val openId = lastOpenId ?: return null
+        val prefix = if (lastIsGroup) "group" else "c2c"
+        return "$prefix:$openId"
+    }
+
+    override fun restoreRoutingContext(targetUserId: String) {
+        val parts = targetUserId.split(":", limit = 2)
+        if (parts.size == 2) {
+            lastIsGroup = parts[0] == "group"
+            lastOpenId = parts[1]
+            lastMessageId = null
+        }
+    }
+
+    override fun sendMessageToUser(userId: String, content: String) {
+        if (userId.isEmpty() || content.isBlank()) return
+        val parts = userId.split(":", limit = 2)
+        if (parts.size != 2) {
+            XLog.w(TAG, "QQ sendMessageToUser 失败：无效的 userId 格式: $userId")
+            return
+        }
+        val isGroup = parts[0] == "group"
+        val openId = parts[1]
+        val seq = nextMsgSeq()
+        scope.launch {
+            try {
+                val api = QBotApiClient.getInstance()
+                if (isGroup) {
+                    api.sendGroupMessage(openId, content, 0, null, seq, callback)
+                } else {
+                    api.sendC2CMessage(openId, content, 0, null, seq, callback)
+                }
+            } catch (e: Exception) {
+                XLog.e(TAG, "QQ sendMessageToUser 失败", e)
+            }
+        }
+    }
+
     companion object {
         private const val TAG = "QQHandler"
     }

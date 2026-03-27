@@ -2,6 +2,8 @@ package com.apk.claw.android.channel.qqbot;
 
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
+
 import com.apk.claw.android.utils.XLog;
 
 import com.apk.claw.android.channel.qqbot.model.AccessTokenResponse;
@@ -41,11 +43,21 @@ public class QBotWebSocketManager {
     private volatile boolean isConnected;
     private volatile boolean heartbeatAckReceived = true;
     private volatile boolean stopped = false;
+    private volatile boolean isReconnecting = false;
     private int shardCount = 1;
     private int currentShard = 0;
 
     /** 收到 QQ 消息时回调（单聊/群聊），由 ChannelManager 设置 */
     private volatile OnQQMessageListener qqMessageListener;
+
+    /** 消息 ID 去重缓存，防止 WebSocket 重连后重复处理同一消息（最多保留 100 条） */
+    private final java.util.Set<String> recentMessageIds = java.util.Collections.newSetFromMap(
+            new java.util.LinkedHashMap<String, Boolean>(100, 0.75f, false) {
+                @Override
+                protected boolean removeEldestEntry(java.util.Map.Entry<String, Boolean> eldest) {
+                    return size() > 100;
+                }
+            });
 
     private List<ConnectionStateListener> connectionStateListeners = new CopyOnWriteArrayList<>();
 
@@ -156,6 +168,7 @@ public class QBotWebSocketManager {
      */
     public void stop() {
         stopped = true;
+        isReconnecting = false;
         mainHandler.removeCallbacksAndMessages(null);
         heartbeatHandler.removeCallbacksAndMessages(null);
         if (webSocket != null) {
@@ -222,10 +235,19 @@ public class QBotWebSocketManager {
      * 连接WebSocket
      */
     private void connectWebSocket(String url) {
+        // 关闭旧连接，避免多个 WebSocket 并存
+        WebSocket oldSocket = webSocket;
+        if (oldSocket != null) {
+            try {
+                oldSocket.close(1000, "新连接替换");
+            } catch (Exception ignored) {}
+            webSocket = null;
+        }
+
         Request request = new Request.Builder()
                 .url(url)
                 .build();
-        
+
         webSocket = httpClient.newWebSocket(request, new WebSocketListener() {
             @Override
             public void onOpen(WebSocket webSocket, Response response) {
@@ -248,21 +270,25 @@ public class QBotWebSocketManager {
             @Override
             public void onClosing(WebSocket webSocket, int code, String reason) {
                 XLog.w(TAG, "WebSocket关闭中: code=" + code + ", reason=" + reason);
+                // onClosed 会紧接着触发，这里只标记状态，不处理重连逻辑
                 isConnected = false;
                 notifyConnectionStateChanged(false);
-                handleWebSocketClose(code, reason);
             }
-            
+
             @Override
             public void onClosed(WebSocket webSocket, int code, String reason) {
+                // 如果当前 webSocket 已经被新连接替换，忽略旧连接的回调
+                if (webSocket != QBotWebSocketManager.this.webSocket) return;
                 XLog.w(TAG, "WebSocket已关闭: code=" + code + ", reason=" + reason);
                 isConnected = false;
                 notifyConnectionStateChanged(false);
                 handleWebSocketClose(code, reason);
             }
-            
+
             @Override
             public void onFailure(WebSocket webSocket, Throwable t, Response response) {
+                // 如果当前 webSocket 已经被新连接替换，忽略旧连接的回调
+                if (webSocket != QBotWebSocketManager.this.webSocket) return;
                 XLog.e(TAG, "WebSocket连接失败: " + (t != null ? t.getMessage() : "null") + ", response=" + response);
                 isConnected = false;
                 notifyConnectionStateChanged(false);
@@ -408,6 +434,13 @@ public class QBotWebSocketManager {
                 XLog.d(TAG, "  附件数量: " + c2cMessage.getAttachments().size());
             }
 
+            // 消息 ID 去重
+            String msgId = c2cMessage.getId();
+            if (msgId != null && !recentMessageIds.add(msgId)) {
+                XLog.d(TAG, "单聊消息去重，跳过: " + msgId);
+                return;
+            }
+
             String userOpenId = c2cMessage.getAuthor() != null ? c2cMessage.getAuthor().getUserOpenid() : null;
             if (userOpenId != null) {
                 OnQQMessageListener listener = qqMessageListener;
@@ -438,6 +471,13 @@ public class QBotWebSocketManager {
             XLog.d(TAG, "  群OpenID: " + groupMessage.getGroupOpenid());
             XLog.d(TAG, "  发送者OpenID: " + (groupMessage.getAuthor() != null ? groupMessage.getAuthor().getMemberOpenid() : "null"));
             XLog.d(TAG, "  内容: " + groupMessage.getContent());
+
+            // 消息 ID 去重
+            String msgId = groupMessage.getId();
+            if (msgId != null && !recentMessageIds.add(msgId)) {
+                XLog.d(TAG, "群聊消息去重，跳过: " + msgId);
+                return;
+            }
 
             String groupOpenId = groupMessage.getGroupOpenid();
             if (groupOpenId != null) {
@@ -525,11 +565,14 @@ public class QBotWebSocketManager {
         
         switch (code) {
             case 4004:
-                // 4004: Authentication fail — token 无效或 intents 无权限，不应重连
-                XLog.e(TAG, "鉴权失败(4004)，请检查 AppId/AppSecret 及 intents 权限，不再重连");
-                if (eventCallback != null) {
-                    eventCallback.onFailure(new QBotException("QQ 鉴权失败(4004): " + reason));
-                }
+                // 4004: Authentication fail — token 可能过期，刷新后重连
+                Log.w(TAG, "鉴权失败(4004)，清除旧token，刷新后重连");
+                // 清除旧 token 强制刷新
+                QBotApiClient.getInstance().clearToken();
+                heartbeatHandler.postDelayed(() -> {
+                    Log.d(TAG, "4004 延迟重连，重新获取token");
+                    start(); // start() 会重新获取 token → gateway → connect
+                }, 3000);
                 break;
 
             case QBotConstants.WS_ERROR_SESSION_TIMEOUT:
@@ -730,10 +773,15 @@ public class QBotWebSocketManager {
     }
     
     /**
-     * 重连
+     * 重连（带防并发保护）
      */
-    private void reconnect() {
+    private synchronized void reconnect() {
         if (stopped) return;
+        if (isReconnecting) {
+            XLog.d(TAG, "已在重连中，跳过重复请求");
+            return;
+        }
+        isReconnecting = true;
         XLog.w(TAG, "尝试重连WebSocket, 当前状态=" + isConnected + ", gatewayUrl=" + (gatewayUrl != null));
         heartbeatHandler.removeCallbacksAndMessages(null);
         if (gatewayUrl != null) {
@@ -741,6 +789,7 @@ public class QBotWebSocketManager {
         } else {
             start();
         }
+        isReconnecting = false;
     }
     
     public boolean isConnected() {

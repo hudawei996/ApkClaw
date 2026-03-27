@@ -59,6 +59,16 @@
         <item name="android:windowSplashScreenBackground">@color/colorBgPrimary</item>
     </style>
 
+    <!-- 透明 Activity（用于剪贴板读取等需要前台焦点的操作） -->
+    <style name="Theme.Transparent" parent="android:Theme">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
+
     <!-- 对话框样式 -->
     <style name="DialogStyle" parent="android:style/Theme.Dialog">
         <item name="android:windowBackground">@android:color/transparent</item>

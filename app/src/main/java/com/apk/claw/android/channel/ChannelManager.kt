@@ -5,6 +5,7 @@ import com.apk.claw.android.channel.discord.DiscordChannelHandler
 import com.apk.claw.android.channel.feishu.FeiShuChannelHandler
 import com.apk.claw.android.channel.qqbot.QQChannelHandler
 import com.apk.claw.android.channel.telegram.TelegramChannelHandler
+import com.apk.claw.android.channel.wechat.WeChatChannelHandler
 import com.apk.claw.android.utils.XLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +18,7 @@ enum class Channel(val displayName: String) {
     QQ("QQ"),
     DISCORD("Discord"),
     TELEGRAM("Telegram"),
+    WECHAT("WeChat"),
 }
 
 object ChannelManager {
@@ -54,7 +56,9 @@ object ChannelManager {
         qqAppId: String? = null,
         qqAppSecret: String? = null,
         discordBotToken: String? = null,
-        telegramBotToken: String? = null
+        telegramBotToken: String? = null,
+        wechatBotToken: String? = null,
+        wechatApiBaseUrl: String? = null
     ) {
         handlers[Channel.DINGTALK] = DingTalkChannelHandler(
             scope, httpClient,
@@ -78,6 +82,11 @@ object ChannelManager {
         handlers[Channel.TELEGRAM] = TelegramChannelHandler(
             scope, httpClient,
             telegramBotToken?.takeIf { it.isNotEmpty() } ?: "",
+        )
+        handlers[Channel.WECHAT] = WeChatChannelHandler(
+            scope,
+            wechatBotToken?.takeIf { it.isNotEmpty() } ?: "",
+            wechatApiBaseUrl?.takeIf { it.isNotEmpty() } ?: "",
         )
 
         handlers.values.forEach { it.init() }
@@ -131,6 +140,11 @@ object ChannelManager {
     }
 
     @JvmStatic
+    fun reinitWeChatFromStorage() {
+        handlers[Channel.WECHAT]?.reinitFromStorage()
+    }
+
+    @JvmStatic
     fun disconnectAll() {
         handlers.forEach { (channel, handler) ->
             if (handler.isConnected()) {
@@ -160,6 +174,41 @@ object ChannelManager {
     fun sendFile(channel: Channel, file: java.io.File, messageID: String) {
         XLog.i(TAG, "sendFile: ${file.name} via ${channel.displayName}")
         handlers[channel]?.sendFile(file, messageID)
+    }
+
+    /**
+     * 立即发送指定通道缓冲区中的待发消息。任务结束时调用。
+     */
+    @JvmStatic
+    fun flushMessages(channel: Channel) {
+        handlers[channel]?.flushMessages()
+    }
+
+    /**
+     * 恢复指定通道的路由上下文，在定时任务执行前调用。
+     */
+    @JvmStatic
+    fun restoreRoutingContext(channel: Channel, targetUserId: String) {
+        handlers[channel]?.restoreRoutingContext(targetUserId)
+    }
+
+    /**
+     * 获取指定通道最近一次消息发送者的标识，用于定时任务持久化。
+     */
+    @JvmStatic
+    fun getLastSenderId(channel: Channel): String? {
+        return handlers[channel]?.getLastSenderId()
+    }
+
+    /**
+     * 按用户标识主动发送消息（不依赖 messageID 上下文），用于定时任务触发。
+     */
+    @JvmStatic
+    fun sendMessageToUser(channel: Channel, userId: String, content: String) {
+        val trimmedContent = content.trim('\n', '\r')
+        if (trimmedContent.isBlank()) return
+        XLog.d(TAG, "sendMessageToUser [${channel.displayName}] userId=${userId.take(20)}: ${trimmedContent.take(120)}")
+        handlers[channel]?.sendMessageToUser(userId, trimmedContent)
     }
 
     /**

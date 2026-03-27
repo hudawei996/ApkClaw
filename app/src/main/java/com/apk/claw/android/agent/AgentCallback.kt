@@ -8,9 +8,9 @@ interface AgentCallback {
      * @param round 当前轮数（从 1 开始）
      */
     fun onLoopStart(round: Int)
-    fun onThinking(round: Int, thought: String)
+    fun onContent(round: Int, content: String)
     fun onToolCall(round: Int, toolId: String, toolName: String, parameters: String)
-    fun onToolResult(round: Int, toolId: String, toolName: String, result: ToolResult)
+    fun onToolResult(round: Int, toolId: String, toolName: String, parameters: String, result: ToolResult)
     fun onComplete(round: Int, finalAnswer: String, totalTokens: Int)
     fun onError(round: Int, error: Exception, totalTokens: Int)
     fun onSystemDialogBlocked(round: Int, totalTokens: Int)

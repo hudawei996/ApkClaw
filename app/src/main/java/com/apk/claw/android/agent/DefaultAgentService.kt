@@ -150,7 +150,7 @@ class DefaultAgentService : AgentService {
                     llmClient.chatStreaming(messages, toolSpecs, object : StreamingListener {
                         override fun onPartialText(token: String) {
                             textBuilder.append(token)
-                            callback.onThinking(iteration, token)
+                            callback.onContent(iteration, token)
                         }
                         override fun onComplete(response: LlmResponse) {}
                         override fun onError(error: Throwable) {}
@@ -188,29 +188,123 @@ class DefaultAgentService : AgentService {
         return history.all { it == first }
     }
 
-    // ==================== 屏幕信息压缩 ====================
+    // ==================== 上下文压缩 ====================
 
-    private val screenInfoPlaceholder = "[屏幕信息已省略]"
+    /** 保护区：最近 N 轮完整保留 */
+    private val KEEP_RECENT_ROUNDS = 3
+
+    /** 大输出观察类工具 → 压缩后占位符 */
+    private val OBSERVATION_PLACEHOLDERS = mapOf(
+        "get_screen_info" to "[屏幕信息已省略]",
+        "take_screenshot" to "[截图结果已省略]",
+        "find_node_info" to "[节点查找结果已省略]",
+        "get_installed_apps" to "[应用列表已省略]",
+        "scroll_to_find" to "[滚动查找结果已省略]"
+    )
 
     /**
-     * 发送前压缩历史中的 get_screen_info 结果，节省 input token：
-     * - 如果消息列表末尾的 ToolExecutionResultMessage 是 get_screen_info → 保留它，其余全部省略
-     * - 否则 → 全部省略
+     * 发送前压缩历史消息，节省 input token：
+     * - get_screen_info：全局只保留最新一条完整结果
+     * - 保护区（最近 KEEP_RECENT_ROUNDS 轮）：完整保留
+     * - 保护区外：AI thinking 不动，tool result 压缩为一行摘要
      */
-    private fun compressScreenInfoForSend(messages: MutableList<ChatMessage>) {
-        // 找到最后一条 ToolExecutionResultMessage
-        val lastToolMsg = messages.lastOrNull { it is ToolExecutionResultMessage } as? ToolExecutionResultMessage
-        val keepLast = lastToolMsg != null && lastToolMsg.toolName() == "get_screen_info"
+    private fun compressHistoryForSend(messages: MutableList<ChatMessage>) {
+        // 压缩前统计总字符数
+        val charsBefore = messages.sumOf { msg ->
+            when (msg) {
+                is AiMessage -> (msg.text()?.length ?: 0) + (msg.toolExecutionRequests()?.sumOf { it.arguments()?.length ?: 0 } ?: 0)
+                is ToolExecutionResultMessage -> msg.text().length
+                is UserMessage -> msg.singleText().length
+                is SystemMessage -> msg.text().length
+                else -> 0
+            }
+        }
+        val msgCountBefore = messages.size
 
+        // 0. get_screen_info 特殊处理：无视分级，全局只保留最新一条完整结果
+        val screenPlaceholder = OBSERVATION_PLACEHOLDERS["get_screen_info"]!!
+        val lastScreenIdx = messages.indexOfLast {
+            it is ToolExecutionResultMessage && it.toolName() == "get_screen_info"
+        }
         for (i in messages.indices) {
             val msg = messages[i]
             if (msg is ToolExecutionResultMessage
                 && msg.toolName() == "get_screen_info"
-                && msg.text() != screenInfoPlaceholder
+                && i != lastScreenIdx
+                && msg.text() != screenPlaceholder
             ) {
-                if (keepLast && msg === lastToolMsg) continue // 保留最新的那条
-                messages[i] = ToolExecutionResultMessage.from(msg.id(), msg.toolName(), screenInfoPlaceholder)
+                messages[i] = ToolExecutionResultMessage.from(msg.id(), msg.toolName(), screenPlaceholder)
             }
+        }
+
+        // 1. 找出所有 AiMessage 的索引，每个代表一轮
+        val aiIndices = messages.indices.filter { messages[it] is AiMessage }
+        if (aiIndices.size <= KEEP_RECENT_ROUNDS) return
+
+        val totalRounds = aiIndices.size
+
+        for (roundIdx in aiIndices.indices) {
+            val roundFromEnd = totalRounds - roundIdx
+            if (roundFromEnd <= KEEP_RECENT_ROUNDS) break // 保护区
+
+            val aiIndex = aiIndices[roundIdx]
+
+            // 收集本轮的 ToolExecutionResultMessage 索引
+            var j = aiIndex + 1
+            while (j < messages.size && messages[j] is ToolExecutionResultMessage) {
+                compressToolResultMessage(messages, j)
+                j++
+            }
+        }
+
+        // 压缩后统计
+        val charsAfter = messages.sumOf { msg ->
+            when (msg) {
+                is AiMessage -> (msg.text()?.length ?: 0) + (msg.toolExecutionRequests()?.sumOf { it.arguments()?.length ?: 0 } ?: 0)
+                is ToolExecutionResultMessage -> msg.text().length
+                is UserMessage -> msg.singleText().length
+                is SystemMessage -> msg.text().length
+                else -> 0
+            }
+        }
+        val saved = charsBefore - charsAfter
+        if (saved > 0) {
+            XLog.i(TAG, "上下文压缩: ${charsBefore}→${charsAfter}字符, 节省${saved}字符(${saved * 100 / charsBefore}%), 轮数=${aiIndices.size}")
+        }
+    }
+
+    /** 压缩 Tool Result：观察类工具用占位符，其他工具截取摘要 */
+    private fun compressToolResultMessage(messages: MutableList<ChatMessage>, index: Int) {
+        val msg = messages[index] as ToolExecutionResultMessage
+        val text = msg.text()
+        if (text.length <= 100) return // 已足够简短，无需压缩
+
+        val placeholder = OBSERVATION_PLACEHOLDERS[msg.toolName()]
+        if (placeholder != null) {
+            messages[index] = ToolExecutionResultMessage.from(msg.id(), msg.toolName(), placeholder)
+            return
+        }
+
+        // 其他工具：解析 JSON 提取摘要
+        val compressed = summarizeToolResult(text)
+        messages[index] = ToolExecutionResultMessage.from(msg.id(), msg.toolName(), compressed)
+    }
+
+    /** 将 ToolResult JSON 压缩为一行摘要 */
+    private fun summarizeToolResult(resultJson: String): String {
+        return try {
+            val mapType = object : TypeToken<Map<String, Any?>>() {}.type
+            val map: Map<String, Any?> = GSON.fromJson(resultJson, mapType)
+            val isSuccess = map["isSuccess"] as? Boolean ?: false
+            if (isSuccess) {
+                val data = map["data"]?.toString() ?: "ok"
+                "✓ " + if (data.length > 80) data.take(80) + "..." else data
+            } else {
+                val error = map["error"]?.toString() ?: "failed"
+                "✗ " + if (error.length > 80) error.take(80) + "..." else error
+            }
+        } catch (_: Exception) {
+            if (resultJson.length > 80) resultJson.take(80) + "..." else resultJson
         }
     }
 
@@ -240,8 +334,8 @@ class DefaultAgentService : AgentService {
             iterations++
             callback.onLoopStart(iterations)
 
-            // 发送前压缩历史中的 get_screen_info，节省 token
-            compressScreenInfoForSend(messages)
+            // 发送前分级压缩历史消息，节省 token
+            compressHistoryForSend(messages)
 
             // LLM 调用（带重试）
             val llmResponse: LlmResponse
@@ -270,7 +364,7 @@ class DefaultAgentService : AgentService {
 
             // 非流式模式下推送思考内容
             if (!config.streaming && !llmResponse.text.isNullOrEmpty()) {
-                callback.onThinking(iterations, llmResponse.text)
+                callback.onContent(iterations, llmResponse.text)
             }
 
             // 如果没有工具调用，Agent 认为完成了
@@ -301,7 +395,8 @@ class DefaultAgentService : AgentService {
                 if (params == null) params = HashMap()
 
                 val result = ToolRegistry.getInstance().executeTool(toolName, params)
-                callback.onToolResult(iterations, toolName, displayName, result)
+                val paramsString = if (params.isEmpty()) "" else params.toString()
+                callback.onToolResult(iterations, toolName, displayName, paramsString, result)
 
                 // 检测到系统弹窗阻塞 → 截图通知用户并结束任务
                 if (!result.isSuccess && result.error == GetScreenInfoTool.SYSTEM_DIALOG_BLOCKED) {
@@ -330,6 +425,7 @@ class DefaultAgentService : AgentService {
                 // 添加工具结果到消息
                 val resultJson = GSON.toJson(result)
                 messages.add(ToolExecutionResultMessage.from(toolRequest, resultJson))
+                XLog.d(TAG, "displayName:$displayName toolName:$toolName")
             }
 
             // 死循环检测
@@ -338,7 +434,7 @@ class DefaultAgentService : AgentService {
                 messages.add(
                     UserMessage.from(
                         "[系统提示] 检测到你连续多轮执行了相同的操作且屏幕没有变化，你可能陷入了死循环。" +
-                        "请尝试完全不同的方法：按 press_back 回退、滑动页面寻找目标、或重新打开 App。" +
+                        "请尝试完全不同的方法：按 system_key(key=\"back\") 回退、滑动页面寻找目标、或重新打开 App。" +
                         "如果确实无法完成任务，请调用 finish 说明原因。"
                     )
                 )

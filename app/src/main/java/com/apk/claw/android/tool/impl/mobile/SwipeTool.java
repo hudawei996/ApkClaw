@@ -54,6 +54,10 @@ public class SwipeTool extends BaseTool {
         int startY = requireInt(params, "start_y");
         int endX = requireInt(params, "end_x");
         int endY = requireInt(params, "end_y");
+        String boundsError = validateCoordinates(startX, startY);
+        if (boundsError != null) return ToolResult.error(boundsError);
+        boundsError = validateCoordinates(endX, endY);
+        if (boundsError != null) return ToolResult.error(boundsError);
         long duration = optionalLong(params, "duration_ms", 500);
         boolean success = service.performSwipe(startX, startY, endX, endY, duration);
         return success ? ToolResult.success("Swiped from (" + startX + ", " + startY + ") to (" + endX + ", " + endY + ")")

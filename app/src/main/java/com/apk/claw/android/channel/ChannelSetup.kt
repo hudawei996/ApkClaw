@@ -23,17 +23,21 @@ class ChannelSetup(
             qqAppId = KVUtils.getQqAppId().ifEmpty { null },
             qqAppSecret = KVUtils.getQqAppSecret().ifEmpty { null },
             discordBotToken = KVUtils.getDiscordBotToken().ifEmpty { null },
-            telegramBotToken = KVUtils.getTelegramBotToken().ifEmpty { null }
+            telegramBotToken = KVUtils.getTelegramBotToken().ifEmpty { null },
+            wechatBotToken = KVUtils.getWechatBotToken().ifEmpty { null },
+            wechatApiBaseUrl = KVUtils.getWechatApiBaseUrl().ifEmpty { null }
         )
         ChannelManager.setOnMessageReceivedListener(object : ChannelManager.OnMessageReceivedListener {
             override fun onMessageReceived(channel: Channel, message: String, messageID: String) {
                 val app = ClawApplication.instance
                 if (!ClawAccessibilityService.isRunning()) {
                     ChannelManager.sendMessage(channel, app.getString(R.string.channel_msg_no_accessibility), messageID)
+                    ChannelManager.flushMessages(channel)
                     return
                 }
                 if (!taskOrchestrator.tryAcquireTask(messageID, channel)) {
                     ChannelManager.sendMessage(channel, app.getString(R.string.channel_msg_task_in_progress), messageID)
+                    ChannelManager.flushMessages(channel)
                     return
                 }
                 taskOrchestrator.startNewTask(channel, message, messageID)

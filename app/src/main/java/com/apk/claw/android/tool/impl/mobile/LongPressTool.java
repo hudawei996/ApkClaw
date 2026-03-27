@@ -50,6 +50,8 @@ public class LongPressTool extends BaseTool {
         }
         int x = requireInt(params, "x");
         int y = requireInt(params, "y");
+        String boundsError = validateCoordinates(x, y);
+        if (boundsError != null) return ToolResult.error(boundsError);
         long duration = optionalLong(params, "duration_ms", 1000);
         boolean success = service.performLongPress(x, y, duration);
         return success ? ToolResult.success("Long pressed at (" + x + ", " + y + ") for " + duration + "ms")

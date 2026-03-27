@@ -195,6 +195,12 @@ public class QBotApiClient {
     public boolean isAuthenticated() {
         return isTokenValid();
     }
+
+    /** 清除缓存的 token，下次调用 ensureTokenAndExecute 会重新获取 */
+    public void clearToken() {
+        accessToken = null;
+        tokenExpireTime = 0;
+    }
     
     public String getAuthorizationHeader() {
         return QBotConstants.AUTH_PREFIX + accessToken;

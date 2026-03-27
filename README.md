@@ -14,10 +14,10 @@ An AI-powered Android automation app that lets an LLM Agent control Android devi
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                   Messaging Channels                     │
-│  DingTalk  │  Feishu  │  QQ  │  Discord  │  Telegram    │
-└──────────────────────┬──────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│                   Messaging Channels                               │
+│  DingTalk  │  Feishu  │  QQ  │  Discord  │  Telegram  |  WeChat    │
+└──────────────────────┬─────────────────────────────────────────────┘
                        │ Incoming message
                        ▼
               ┌─────────────────┐
@@ -46,6 +46,10 @@ An AI-powered Android automation app that lets an LLM Agent control Android devi
                        ▼
               Reply to user via channel
 ```
+
+## Star History
+
+![Star History Chart](https://api.star-history.com/svg?repos=apkclaw-team/ApkClaw)
 
 ## Core Execution Flow
 

@@ -103,12 +103,19 @@ class SettingsActivity : BaseActivity() {
             onClick = { viewModel.onMenuItemClick(SettingsViewModel.MenuAction.TELEGRAM) },
             showDivider = true
         )
+        menuItems[SettingsViewModel.MenuAction.WECHAT.name] = channelGroup.addMenuItem(
+            leadingIcon = R.drawable.ic_channel_wechat,
+            title = getString(R.string.menu_wechat),
+            onClick = { viewModel.onMenuItemClick(SettingsViewModel.MenuAction.WECHAT) },
+            showDivider = true
+        )
         menuItems[SettingsViewModel.MenuAction.LAN_CONFIG.name] = channelGroup.addMenuItem(
             leadingIcon = R.drawable.ic_lan_config,
             title = getString(R.string.menu_lan_config),
             onClick = { viewModel.onMenuItemClick(SettingsViewModel.MenuAction.LAN_CONFIG) },
             showDivider = false
         )
+        menuItems[SettingsViewModel.MenuAction.LAN_CONFIG.name]?.setLeadingIconColor(getColor(R.color.colorTextPrimary))
 
 
         val modelGroup = findViewById<MenuGroup>(R.id.modelGroup)
@@ -173,6 +180,16 @@ class SettingsActivity : BaseActivity() {
                                     }
                                 } else {
                                     channelConfigLauncher.launch(ChannelConfigActivity.ChannelType.FEISHU)
+                                }
+                            }
+                            SettingsViewModel.MenuAction.WECHAT -> {
+                                if (viewModel.isWechatBound()) {
+                                    showUnbindDialog(getString(R.string.channel_wechat)) {
+                                        viewModel.unbindWeChat()
+                                        Toast.makeText(this@SettingsActivity, R.string.common_unbound_success, Toast.LENGTH_SHORT).show()
+                                    }
+                                } else {
+                                    viewModel.startWeChatQrLogin(this@SettingsActivity)
                                 }
                             }
                             SettingsViewModel.MenuAction.QQ -> {

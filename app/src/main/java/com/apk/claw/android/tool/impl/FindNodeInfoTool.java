@@ -9,7 +9,7 @@ import com.apk.claw.android.tool.BaseTool;
 import com.apk.claw.android.tool.ToolParameter;
 import com.apk.claw.android.tool.ToolResult;
 
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -27,19 +27,18 @@ public class FindNodeInfoTool extends BaseTool {
 
     @Override
     public String getDescriptionEN() {
-        return "Find elements by text or resource ID and return their detailed information (class, bounds, properties). Useful for inspecting specific elements before interacting.";
+        return "Find elements by visible text and return their detailed information (class, bounds, properties). Useful for inspecting specific elements before interacting.";
     }
 
     @Override
     public String getDescriptionCN() {
-        return "通过文本或资源ID查找元素，返回详细信息（类名、边界、属性）。适用于在交互前检查特定元素。";
+        return "通过可见文本查找元素，返回详细信息（类名、边界、属性）。适用于在交互前检查特定元素。";
     }
 
     @Override
     public List<ToolParameter> getParameters() {
-        return Arrays.asList(
-                new ToolParameter("text", "string", "The text to search for (optional if id is provided)", false),
-                new ToolParameter("id", "string", "The resource ID to search for (optional if text is provided)", false)
+        return Collections.singletonList(
+                new ToolParameter("text", "string", "The visible text to search for", true)
         );
     }
 
@@ -50,22 +49,11 @@ public class FindNodeInfoTool extends BaseTool {
             return ToolResult.error("Accessibility service is not running");
         }
 
-        String text = optionalString(params, "text", "");
-        String id = optionalString(params, "id", "");
-
-        if (text == null && id == null) {
-            return ToolResult.error("At least one of 'text' or 'id' must be provided");
-        }
-
-        List<AccessibilityNodeInfo> nodes;
-        if (id != null) {
-            nodes = service.findNodesById(id);
-        } else {
-            nodes = service.findNodesByText(text);
-        }
+        String text = requireString(params, "text");
+        List<AccessibilityNodeInfo> nodes = service.findNodesByText(text);
 
         if (nodes.isEmpty()) {
-            return ToolResult.error("No elements found matching the query");
+            return ToolResult.error("No elements found with text: " + text);
         }
 
         try {

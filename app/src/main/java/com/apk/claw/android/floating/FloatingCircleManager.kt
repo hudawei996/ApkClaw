@@ -1,18 +1,20 @@
 package com.apk.claw.android.floating
 
 import android.app.Application
+import android.content.res.Resources
 import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
 import android.view.View
+import android.view.WindowManager
 import android.widget.ImageView
-import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.annotation.DrawableRes
 import com.blankj.utilcode.util.ThreadUtils
 import com.apk.claw.android.R
 import com.apk.claw.android.channel.Channel
 import com.apk.claw.android.utils.KVUtils
+import com.blankj.utilcode.util.BarUtils
 import com.lzf.easyfloat.EasyFloat
 import com.lzf.easyfloat.enums.ShowPattern
 import com.lzf.easyfloat.enums.SidePattern
@@ -35,10 +37,11 @@ object FloatingCircleManager {
      * 悬浮窗状态
      */
     enum class State {
-        IDLE,       // 等待任务（默认）
-        RUNNING,    // 任务执行中
-        SUCCESS,    // 任务完成
-        ERROR       // 任务失败
+        IDLE,           // 等待任务（默认）
+        TASK_NOTIFY,    // 收到任务通知（胶囊展开）
+        RUNNING,        // 任务执行中
+        SUCCESS,        // 任务完成
+        ERROR           // 任务失败
     }
 
     private var isShowing = false
@@ -46,8 +49,14 @@ object FloatingCircleManager {
     private var currentRound: Int = 0
     private var currentChannel: Channel? = null
 
+    private const val TASK_NOTIFY_DURATION_MS = 3000L // 任务通知显示 3 秒后收回
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private var autoResetRunnable: Runnable? = null
+    private var notifyCollapseRunnable: Runnable? = null
+    private var pendingTaskText: String = ""
+
+    private var appRef: Application? = null
 
     /**
      * 显示悬浮窗
@@ -63,6 +72,7 @@ object FloatingCircleManager {
         if (isShowing) {
             return
         }
+        appRef = application
 
         // 计算默认位置：屏幕中心的右边
         val screenWidth = DisplayUtils.getScreenWidth(application)
@@ -89,12 +99,22 @@ object FloatingCircleManager {
                     msg: String?,
                     view: View?
                 ) {
+                    // 缓存圆形原始宽度（必须在任何 setFloatRootWidth 之前）
+                    view?.findViewById<View>(R.id.floatRoot)?.let { root ->
+                        if (circleWidthPx <= 0) {
+                            circleWidthPx = root.layoutParams?.width ?: -1
+                        }
+                    }
                     // 点击事件
                     view?.setOnClickListener {
                         onFloatClick()
                     }
                     // 初始化状态
                     updateStateView(view, currentState)
+                    // 布局完成后检测位置，防止圆球卡在屏幕外
+                    view?.post {
+                        ensureFloatInBounds(view)
+                    }
                 }
 
                 override fun dismiss() {
@@ -105,10 +125,8 @@ object FloatingCircleManager {
                 }
 
                 override fun dragEnd(view: View) {
-                    // 拖动结束，保存位置
-                    val location = IntArray(2)
-                    view.getLocationOnScreen(location)
-                    savePosition(location[0], location[1])
+                    // 拖动结束，修正位置并保存
+                    ensureFloatInBounds(view)
                 }
 
                 override fun hide(view: View) {
@@ -151,6 +169,32 @@ object FloatingCircleManager {
     }
 
     /**
+     * 显示任务通知：悬浮窗展开为胶囊，显示任务内容，3 秒后自动收回进入 RUNNING 状态。
+     * @param taskText 任务文本（会截断显示）
+     * @param channel 消息来源渠道
+     */
+    fun showTaskNotify(taskText: String, channel: Channel) {
+        ThreadUtils.runOnUiThread {
+            pendingTaskText = taskText
+            currentChannel = channel
+            cancelNotifyCollapse()
+            setState(State.TASK_NOTIFY)
+            // 3 秒后自动收回为 RUNNING（直接 setState，绕过 TASK_NOTIFY 守卫）
+            notifyCollapseRunnable = Runnable {
+                setState(State.RUNNING)
+            }
+            mainHandler.postDelayed(notifyCollapseRunnable!!, TASK_NOTIFY_DURATION_MS)
+        }
+    }
+
+    private fun cancelNotifyCollapse() {
+        notifyCollapseRunnable?.let {
+            mainHandler.removeCallbacks(it)
+            notifyCollapseRunnable = null
+        }
+    }
+
+    /**
      * 切换到任务执行中状态
      * @param round 当前轮数
      * @param channel 消息来源渠道
@@ -159,9 +203,12 @@ object FloatingCircleManager {
         ThreadUtils.runOnUiThread {
             currentRound = round
             currentChannel = channel
+            // 如果正在显示任务通知胶囊，只更新数据，不切换 UI（等定时器到期自动切）
+            if (currentState == State.TASK_NOTIFY) {
+                return@runOnUiThread
+            }
             setState(State.RUNNING)
         }
-
     }
 
     /**
@@ -201,12 +248,14 @@ object FloatingCircleManager {
         if (view == null) return
 
         val cardIdle = view.findViewById<View>(R.id.cardIdle)
+        val cardTaskNotify = view.findViewById<View>(R.id.cardTaskNotify)
         val cardRunning = view.findViewById<View>(R.id.cardRunning)
         val cardSuccess = view.findViewById<View>(R.id.cardSuccess)
         val cardError = view.findViewById<View>(R.id.cardError)
 
         // 隐藏所有状态
         cardIdle?.visibility = View.GONE
+        cardTaskNotify?.visibility = View.GONE
         cardRunning?.visibility = View.GONE
         cardSuccess?.visibility = View.GONE
         cardError?.visibility = View.GONE
@@ -218,8 +267,27 @@ object FloatingCircleManager {
         when (state) {
             State.IDLE -> {
                 cardIdle?.visibility = View.VISIBLE
+                setFloatRootWidth(view, getCircleWidth(view))
+            }
+            State.TASK_NOTIFY -> {
+                cardTaskNotify?.visibility = View.VISIBLE
+                val tvNotify = view.findViewById<TextView>(R.id.tvTaskNotify)
+                val app = appRef ?: return
+                val displayText = if (pendingTaskText.length > 40) {
+                    pendingTaskText.substring(0, 40) + "…"
+                } else {
+                    pendingTaskText
+                }
+                tvNotify?.text = app.getString(R.string.floating_task_received, displayText)
+                val ivLogo = view.findViewById<ImageView>(R.id.ivNotifyChannelLogo)
+                ivLogo?.setImageResource(getChannelIcon(currentChannel))
+                // 展开为 wrap_content
+                setFloatRootWidth(view, WindowManager.LayoutParams.WRAP_CONTENT)
             }
             State.RUNNING -> {
+                cancelNotifyCollapse()
+                // 收回为固定圆形
+                setFloatRootWidth(view, getCircleWidth(view))
                 cardRunning?.visibility = View.VISIBLE
                 // 更新轮数显示
                 val tvRound = view.findViewById<TextView>(R.id.tvRound)
@@ -229,10 +297,14 @@ object FloatingCircleManager {
                 ivChannelLogo?.setImageResource(getChannelIcon(currentChannel))
             }
             State.SUCCESS -> {
+                cancelNotifyCollapse()
                 cardSuccess?.visibility = View.VISIBLE
+                setFloatRootWidth(view, getCircleWidth(view))
             }
             State.ERROR -> {
+                cancelNotifyCollapse()
                 cardError?.visibility = View.VISIBLE
+                setFloatRootWidth(view, getCircleWidth(view))
             }
         }
     }
@@ -248,6 +320,7 @@ object FloatingCircleManager {
             Channel.QQ -> R.drawable.ic_channel_qq
             Channel.DISCORD -> R.drawable.ic_channel_discord
             Channel.TELEGRAM -> R.drawable.ic_channel_telegram
+            Channel.WECHAT -> R.drawable.ic_channel_wechat
             else -> R.drawable.ic_launcher
         }
     }
@@ -272,6 +345,76 @@ object FloatingCircleManager {
             autoResetRunnable = null
         }
     }
+
+    /**
+     * 确保悬浮窗在屏幕可见范围内，超出则修正
+     */
+    private fun ensureFloatInBounds(view: View) {
+        val screenHeight = Resources.getSystem().displayMetrics.heightPixels
+        val screenWidth = Resources.getSystem().displayMetrics.widthPixels
+        // 获取导航栏高度，确保圆球不会被导航栏遮挡
+        val navBarHeight = getNavigationBarHeight()
+
+        // 方式1：尝试从 view 层级找到 WindowManager.LayoutParams
+        var wmParams: WindowManager.LayoutParams? = null
+        var wmView: View? = view
+        while (wmView != null) {
+            val lp = wmView.layoutParams
+            if (lp is WindowManager.LayoutParams) {
+                wmParams = lp
+                break
+            }
+            wmView = wmView.parent as? View
+        }
+
+        if (wmParams != null) {
+            val floatHeight = (wmView ?: view).height
+            val floatWidth = (wmView ?: view).width
+            val maxX = (screenWidth - floatWidth).coerceAtLeast(0)
+            // 减去导航栏高度和额外安全边距
+            val maxY = (screenHeight - floatHeight - navBarHeight - 50).coerceAtLeast(0)
+            val clampedX = wmParams.x.coerceIn(0, maxX)
+            val clampedY = wmParams.y.coerceIn(0, maxY)
+            if (clampedX != wmParams.x || clampedY != wmParams.y) {
+                EasyFloat.updateFloat(FLOAT_TAG, clampedX, clampedY)
+            }
+            savePosition(clampedX, clampedY)
+            return
+        }
+
+        // 兜底：用 getLocationOnScreen 检测，updateFloat 修正
+        val location = IntArray(2)
+        view.getLocationOnScreen(location)
+        val viewBottom = location[1] + view.height
+        if (viewBottom > screenHeight - navBarHeight || location[1] < 0) {
+            val safeY = screenHeight / 3
+            EasyFloat.updateFloat(FLOAT_TAG, location[0].coerceIn(0, screenWidth), safeY)
+            savePosition(location[0].coerceIn(0, screenWidth), safeY)
+        } else {
+            savePosition(location[0], location[1])
+        }
+    }
+
+    private fun getNavigationBarHeight(): Int = BarUtils.getNavBarHeight()
+
+    /** 圆形状态的原始宽度（首次从 layout 读取并缓存） */
+    private var circleWidthPx: Int = -1
+
+    /** 动态修改悬浮窗根布局宽度（展开胶囊 / 收回圆形） */
+    private fun setFloatRootWidth(view: View, widthPx: Int) {
+        val root = view.findViewById<View>(R.id.floatRoot) ?: return
+        val lp = root.layoutParams
+        if (lp != null && lp.width != widthPx) {
+            lp.width = widthPx
+            root.layoutParams = lp
+        }
+    }
+
+    /** 获取圆形状态的宽度（createdResult 时缓存，确保与 XML 定义一致） */
+    private fun getCircleWidth(@Suppress("UNUSED_PARAMETER") view: View): Int {
+        return if (circleWidthPx > 0) circleWidthPx else WindowManager.LayoutParams.WRAP_CONTENT
+    }
+
 
     /**
      * 保存位置

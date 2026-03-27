@@ -131,16 +131,28 @@ class TaskOrchestrator(
 
         ClawAccessibilityService.getInstance()?.pressHome()
 
-        FloatingCircleManager.setRunningState(1, channel)
+        FloatingCircleManager.showTaskNotify(task, channel)
+
+        // 每轮消息聚合缓冲：thinking + toolResult 攒成一条，减少发送次数
+        val roundBuffer = StringBuilder()
+
+        fun flushRoundBuffer() {
+            if (roundBuffer.isNotEmpty()) {
+                ChannelManager.sendMessage(channel, roundBuffer.toString().trim(), messageID)
+                roundBuffer.clear()
+            }
+        }
 
         agentService.executeTask(task, object : AgentCallback {
             override fun onLoopStart(round: Int) {
+                // 新一轮开始前，flush 上一轮积攒的消息
+                flushRoundBuffer()
                 FloatingCircleManager.setRunningState(round, channel)
             }
 
-            override fun onThinking(round: Int, thought: String) {
-                if (thought.isNotEmpty()) {
-                    ChannelManager.sendMessage(channel, thought, messageID)
+            override fun onContent(round: Int, content: String) {
+                if (content.isNotEmpty()) {
+                    roundBuffer.append(content)
                 }
             }
 
@@ -148,46 +160,54 @@ class TaskOrchestrator(
                 XLog.d(TAG, "onToolCall: $toolId($toolName), $parameters")
             }
 
-            override fun onToolResult(round: Int, toolId: String, toolName: String, result: ToolResult) {
+            override fun onToolResult(round: Int, toolId: String, toolName: String, parameters: String, result: ToolResult) {
                 val app = ClawApplication.instance
                 val status = if (result.isSuccess) app.getString(R.string.channel_msg_tool_success) else app.getString(R.string.channel_msg_tool_failure)
                 var data = if (result.isSuccess) result.data else result.error
                 if (data != null && data.length > 300) {
                     data = data.substring(0, 300) + "...(truncated)"
                 }
+                if (!result.isSuccess) {
+                    XLog.e(TAG, "!!!!!!!!!!Fail: $toolName, $parameters $data")
+                }
                 XLog.e(TAG, "onToolResult: $toolName, $status $data")
                 if (toolId == "finish" && (result.data?.isNotEmpty() ?: false)) {
+                    // finish 的结果单独发，不合并（这是最终回复）
+                    flushRoundBuffer()
                     ChannelManager.sendMessage(channel, result.data, messageID)
                 } else {
-                    ChannelManager.sendMessage(
-                        channel,
-                        app.getString(R.string.channel_msg_tool_execution, toolName, status),
-                        messageID
+                    // 追加到本轮缓冲
+                    if (roundBuffer.isNotEmpty()) roundBuffer.append("\n")
+                    roundBuffer.append(
+                        app.getString(R.string.channel_msg_tool_execution, toolName + parameters, status)
                     )
                 }
             }
 
             override fun onComplete(round: Int, finalAnswer: String, totalTokens: Int) {
                 XLog.i(TAG, "onComplete: 轮数=$round, totalTokens=$totalTokens, answer=$finalAnswer")
+                flushRoundBuffer()
                 releaseTask()
+                ChannelManager.flushMessages(channel)
                 FloatingCircleManager.setSuccessState()
                 onTaskFinished()
             }
 
             override fun onError(round: Int, error: Exception, totalTokens: Int) {
                 XLog.e(TAG, "onError: ${error.message}, totalTokens=$totalTokens", error)
+                flushRoundBuffer()
                 releaseTask()
                 ChannelManager.sendMessage(channel, ClawApplication.instance.getString(R.string.channel_msg_task_error, error.message), messageID)
+                ChannelManager.flushMessages(channel)
                 FloatingCircleManager.setErrorState()
                 onTaskFinished()
             }
 
             override fun onSystemDialogBlocked(round: Int, totalTokens: Int) {
                 XLog.w(TAG, "onSystemDialogBlocked: round=$round, totalTokens=$totalTokens")
+                flushRoundBuffer()
                 releaseTask()
-                // 发送提示消息
                 ChannelManager.sendMessage(channel, ClawApplication.instance.getString(R.string.channel_msg_system_dialog_blocked), messageID)
-                // 截图发送给用户
                 try {
                     val service = ClawAccessibilityService.getInstance()
                     val bitmap = service?.takeScreenshot(5000)

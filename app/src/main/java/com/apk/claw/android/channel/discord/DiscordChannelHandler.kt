@@ -112,6 +112,23 @@ class DiscordChannelHandler(
         }
     }
 
+    override fun getLastSenderId(): String? = lastChannelId
+
+    override fun restoreRoutingContext(targetUserId: String) {
+        if (targetUserId.isNotEmpty()) lastChannelId = targetUserId
+    }
+
+    override fun sendMessageToUser(userId: String, content: String) {
+        if (userId.isEmpty() || content.isBlank()) return
+        scope.launch {
+            try {
+                DiscordApiClient.getInstance().sendMessage(userId, content, callback)
+            } catch (e: Exception) {
+                XLog.e(TAG, "Discord sendMessageToUser 失败", e)
+            }
+        }
+    }
+
     companion object {
         private const val TAG = "DiscordHandler"
     }

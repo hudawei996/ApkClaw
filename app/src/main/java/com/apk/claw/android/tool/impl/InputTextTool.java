@@ -35,19 +35,24 @@ public class InputTextTool extends BaseTool {
 
     @Override
     public String getDescriptionEN() {
-        return "Input text into a focused text field or a text field found by resource ID. If no ID is provided, it will attempt to set text on the currently focused node.";
+        return "Input text into the currently focused text field. "
+                + "Tap the text field first to focus it, then call this tool. "
+                + "By default clears existing content before inputting (clear_first=true). "
+                + "Set clear_first=false to append text without clearing.";
     }
 
     @Override
     public String getDescriptionCN() {
-        return "向聚焦的文本框或通过资源ID找到的文本框输入文本。如果未提供ID，将尝试在当前聚焦的节点上设置文本。";
+        return "向当前聚焦的文本框输入文本。先 tap 文本框使其获得焦点，再调用此工具。"
+                + "默认先清空已有内容再输入（clear_first=true）。"
+                + "设置 clear_first=false 可追加文本而不清空。";
     }
 
     @Override
     public List<ToolParameter> getParameters() {
         return Arrays.asList(
                 new ToolParameter("text", "string", "The text to input", true),
-                new ToolParameter("id", "string", "The resource ID of the text field (optional, uses focused node if not provided)", false)
+                new ToolParameter("clear_first", "boolean", "Whether to clear existing text before input (default true)", false)
         );
     }
 
@@ -59,24 +64,11 @@ public class InputTextTool extends BaseTool {
         }
 
         String text = requireString(params, "text");
-        String id = optionalString(params, "id", "");
+        boolean clearFirst = optionalBoolean(params, "clear_first", true);
 
-        AccessibilityNodeInfo targetNode = null;
-
-        if (!id.isEmpty()) {
-            List<AccessibilityNodeInfo> nodes = service.findNodesById(id);
-            if (!nodes.isEmpty()) {
-                targetNode = nodes.get(0);
-                // Recycle unused nodes (skip index 0 which is targetNode)
-                for (int i = 1; i < nodes.size(); i++) {
-                    try { nodes.get(i).recycle(); } catch (Exception ignored) {}
-                }
-            }
-        } else {
-            targetNode = service.getRootInActiveWindow() != null
-                    ? findFocusedEditText(service.getRootInActiveWindow())
-                    : null;
-        }
+        AccessibilityNodeInfo targetNode = service.getRootInActiveWindow() != null
+                ? findFocusedEditText(service.getRootInActiveWindow())
+                : null;
 
         if (targetNode == null) {
             return ToolResult.error("No target text field found");
@@ -86,11 +78,28 @@ public class InputTextTool extends BaseTool {
         targetNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
         targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK);
 
+        // 如果需要清空，先全选+删除
+        if (clearFirst) {
+            clearNodeText(targetNode);
+        }
+
         // 策略1: 先尝试 ACTION_SET_TEXT（标准方式）
-        Bundle args = new Bundle();
-        args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
-        if (targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
-            return ToolResult.success("Input text: " + text);
+        // 注意：ACTION_SET_TEXT 本身是覆盖式的，append 模式下需要拼接原有文本
+        if (clearFirst) {
+            Bundle args = new Bundle();
+            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
+            if (targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
+                return ToolResult.success("Input text: " + text);
+            }
+        } else {
+            // append 模式：读取已有文本 + 新文本
+            CharSequence existing = targetNode.getText();
+            String newText = (existing != null ? existing.toString() : "") + text;
+            Bundle args = new Bundle();
+            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, newText);
+            if (targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
+                return ToolResult.success("Appended text: " + text);
+            }
         }
 
         // 策略2: 通过剪贴板粘贴（兼容性更好）
@@ -99,18 +108,41 @@ public class InputTextTool extends BaseTool {
             return ToolResult.error("Failed to set clipboard text");
         }
 
-        // 先清空已有内容：全选 + 粘贴覆盖
-        Bundle selectAllArgs = new Bundle();
-        selectAllArgs.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0);
-        selectAllArgs.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, Integer.MAX_VALUE);
-        targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selectAllArgs);
+        if (clearFirst) {
+            // 再次确保清空（有些 App 策略1失败后可能没清干净）
+            clearNodeText(targetNode);
+        } else {
+            // append 模式：光标移到末尾
+            CharSequence existing = targetNode.getText();
+            int end = existing != null ? existing.length() : 0;
+            Bundle cursorArgs = new Bundle();
+            cursorArgs.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, end);
+            cursorArgs.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, end);
+            targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, cursorArgs);
+        }
 
         // 执行粘贴
         if (targetNode.performAction(AccessibilityNodeInfo.ACTION_PASTE)) {
-            return ToolResult.success("Input text (via paste): " + text);
+            return ToolResult.success(clearFirst ? "Input text (via paste): " + text : "Appended text (via paste): " + text);
         }
 
         return ToolResult.error("Failed to input text, both ACTION_SET_TEXT and clipboard paste failed");
+    }
+
+    /**
+     * 清空输入框内容：全选 → 删除
+     */
+    private void clearNodeText(AccessibilityNodeInfo node) {
+        // 全选
+        Bundle selectAllArgs = new Bundle();
+        selectAllArgs.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0);
+        selectAllArgs.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, Integer.MAX_VALUE);
+        node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selectAllArgs);
+
+        // 用空字符串覆盖选中内容
+        Bundle clearArgs = new Bundle();
+        clearArgs.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "");
+        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs);
     }
 
     private boolean setClipboardText(Context context, String text) {

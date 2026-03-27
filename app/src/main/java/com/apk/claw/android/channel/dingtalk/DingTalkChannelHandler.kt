@@ -37,6 +37,8 @@ class DingTalkChannelHandler(
     private var lastConversationType: String? = null
     @Volatile
     private var lastConversationId: String? = null
+    @Volatile
+    private var lastMsgId: String? = null
 
     @Volatile
     private var accessToken: String? = null
@@ -65,7 +67,8 @@ class DingTalkChannelHandler(
                         lastSenderStaffId = message.senderStaffId
                         lastConversationType = message.conversationType
                         lastConversationId = message.conversationId
-                        ChannelManager.dispatchMessage(channel, text, "uuid-todo")
+                        lastMsgId = message.msgId
+                        ChannelManager.dispatchMessage(channel, text, lastMsgId ?: "")
                         return null
                     }
                 }
@@ -357,6 +360,78 @@ class DingTalkChannelHandler(
         val respBody = response.body?.string()
         XLog.i(TAG, "钉钉消息发送响应: code=${response.code}, body=$respBody")
         response.close()
+    }
+
+    override fun getLastSenderId(): String? {
+        val convType = lastConversationType ?: return null
+        return if (convType == "1") {
+            lastSenderStaffId?.let { "1:$it" }
+        } else {
+            lastConversationId?.let { "group:$it" }
+        }
+    }
+
+    override fun restoreRoutingContext(targetUserId: String) {
+        val parts = targetUserId.split(":", limit = 2)
+        if (parts.size == 2) {
+            if (parts[0] == "1") {
+                lastConversationType = "1"
+                lastSenderStaffId = parts[1]
+            } else {
+                lastConversationType = "2"
+                lastConversationId = parts[1]
+            }
+        }
+    }
+
+    override fun sendMessageToUser(userId: String, content: String) {
+        if (userId.isEmpty() || content.isBlank()) return
+        val parts = userId.split(":", limit = 2)
+        if (parts.size != 2) {
+            XLog.w(TAG, "钉钉 sendMessageToUser 失败：无效的 userId 格式: $userId")
+            return
+        }
+        scope.launch {
+            try {
+                val token = getAccessToken()
+                if (token == null) {
+                    XLog.e(TAG, "钉钉 sendMessageToUser 失败：无法获取 accessToken")
+                    return@launch
+                }
+                val msgParam = com.google.gson.JsonObject().apply {
+                    addProperty("content", content)
+                }.toString()
+
+                val (url, bodyJson) = if (parts[0] == "1") {
+                    "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend" to
+                        com.google.gson.JsonObject().apply {
+                            addProperty("robotCode", appKey)
+                            add("userIds", com.google.gson.JsonArray().apply { add(parts[1]) })
+                            addProperty("msgKey", "sampleText")
+                            addProperty("msgParam", msgParam)
+                        }.toString()
+                } else {
+                    "https://api.dingtalk.com/v1.0/robot/groupMessages/send" to
+                        com.google.gson.JsonObject().apply {
+                            addProperty("robotCode", appKey)
+                            addProperty("openConversationId", parts[1])
+                            addProperty("msgKey", "sampleText")
+                            addProperty("msgParam", msgParam)
+                        }.toString()
+                }
+
+                val request = okhttp3.Request.Builder()
+                    .url(url)
+                    .addHeader("x-acs-dingtalk-access-token", token)
+                    .post(okhttp3.RequestBody.create("application/json".toMediaTypeOrNull(), bodyJson))
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                XLog.i(TAG, "钉钉 sendMessageToUser 响应: ${response.code}")
+                response.close()
+            } catch (e: Exception) {
+                XLog.e(TAG, "钉钉 sendMessageToUser 失败", e)
+            }
+        }
     }
 
     companion object {

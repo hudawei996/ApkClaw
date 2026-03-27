@@ -19,12 +19,24 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            val props = Properties().apply {
+                rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+            }
+            storeFile = file(props.getProperty("KEYSTORE_FILE", ""))
+            storePassword = props.getProperty("KEYSTORE_PASSWORD", "")
+            keyAlias = props.getProperty("KEY_ALIAS", "")
+            keyPassword = props.getProperty("KEY_PASSWORD", "")
+        }
+    }
+
     defaultConfig {
         applicationId = "com.apk.claw.android"
         minSdk = 28
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.0.1"
+        versionCode = 2
+        versionName = "0.0.2"
         buildConfigField("String", "VERSION_INFO", getVersionGit())
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -41,6 +53,7 @@ android {
         }
 
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

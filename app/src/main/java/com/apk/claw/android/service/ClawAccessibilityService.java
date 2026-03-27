@@ -219,46 +219,200 @@ public class ClawAccessibilityService extends AccessibilityService {
         return sb.toString();
     }
 
+    /**
+     * Collects a FULL tree representation of the current screen (debug only).
+     * Includes ALL nodes with all properties, no filtering.
+     * Useful for comparing with the filtered version to debug AI behavior.
+     */
+    public String getScreenTreeFull() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        buildNodeTreeFull(root, sb, 0);
+        return sb.toString();
+    }
+
     private void buildNodeTree(AccessibilityNodeInfo node, StringBuilder sb, int depth) {
         if (node == null) {
             return;
         }
+
+        // 跳过不在屏幕可见区域内的节点（滚动容器中超出屏幕的元素）
+        if (!node.isVisibleToUser()) {
+            // 仍然遍历子节点，因为父节点不可见不代表所有子节点都不可见
+            for (int i = 0; i < node.getChildCount(); i++) {
+                AccessibilityNodeInfo child = node.getChild(i);
+                if (child != null) {
+                    buildNodeTree(child, sb, depth);
+                    child.recycle();
+                }
+            }
+            return;
+        }
+
+        // 判断当前节点是否有"信息量"（有 text/desc/可交互/可滚动/可编辑/进度条/滑块）
+        boolean hasText = node.getText() != null && node.getText().length() > 0;
+        boolean hasDesc = node.getContentDescription() != null && node.getContentDescription().length() > 0;
+        boolean isInteractive = node.isClickable() || node.isScrollable() || node.isEditable()
+                || node.isCheckable() || node.isLongClickable();
+        boolean isSlider = isSliderNode(node);
+        CharSequence cn = node.getClassName();
+        boolean isProgress = cn != null && cn.toString().contains("ProgressBar");
+        boolean isMeaningful = hasText || hasDesc || isInteractive || isSlider || isProgress;
+
+        if (isMeaningful) {
+            String indent = "  ".repeat(depth);
+            sb.append(indent);
+
+            // 简化 className：只保留最后一段（如 android.widget.TextView → TextView）
+            CharSequence className = node.getClassName();
+            if (className != null) {
+                String cls = className.toString();
+                int dotIdx = cls.lastIndexOf('.');
+                sb.append("[").append(dotIdx >= 0 ? cls.substring(dotIdx + 1) : cls).append("]");
+            }
+
+            if (hasText) {
+                // 截断超长文本，避免输出爆炸
+                CharSequence text = node.getText();
+                if (text.length() > 100) {
+                    sb.append(" text=\"").append(text.subSequence(0, 100)).append("...\"");
+                } else {
+                    sb.append(" text=\"").append(text).append("\"");
+                }
+            }
+            if (hasDesc) {
+                sb.append(" desc=\"").append(node.getContentDescription()).append("\"");
+            }
+            if (node.isClickable()) {
+                sb.append(" [clickable]");
+            }
+            if (node.isLongClickable()) {
+                sb.append(" [long-clickable]");
+            }
+            if (node.isScrollable()) {
+                sb.append(" [scrollable]");
+            }
+            if (node.isEditable()) {
+                sb.append(" [editable]");
+            }
+            if (node.isCheckable()) {
+                sb.append(node.isChecked() ? " [checked]" : " [unchecked]");
+            }
+            if (!node.isEnabled()) {
+                sb.append(" [disabled]");
+            }
+            if (node.isFocused()) {
+                sb.append(" [focused]");
+            }
+            if (isProgress) {
+                sb.append(" [loading]");
+            }
+
+            Rect bounds = new Rect();
+            node.getBoundsInScreen(bounds);
+            sb.append(" bounds=").append(bounds.toShortString());
+
+            sb.append("\n");
+        }
+
+        // 子节点层级：如果当前节点被跳过（非 meaningful），子节点保持同层级，不增加 depth
+        int childDepth = isMeaningful ? depth + 1 : depth;
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                buildNodeTree(child, sb, childDepth);
+                child.recycle();
+            }
+        }
+    }
+
+    /**
+     * Full node tree builder - outputs ALL nodes with ALL properties, no filtering.
+     */
+    private void buildNodeTreeFull(AccessibilityNodeInfo node, StringBuilder sb, int depth) {
+        if (node == null) {
+            return;
+        }
+
         String indent = "  ".repeat(depth);
         sb.append(indent);
-        sb.append("[").append(node.getClassName()).append("]");
 
-        if (node.getViewIdResourceName() != null) {
-            sb.append(" id=").append(node.getViewIdResourceName());
+        // className
+        CharSequence className = node.getClassName();
+        if (className != null) {
+            String cls = className.toString();
+            int dotIdx = cls.lastIndexOf('.');
+            sb.append("[").append(dotIdx >= 0 ? cls.substring(dotIdx + 1) : cls).append("]");
         }
-        if (node.getText() != null) {
-            sb.append(" text=\"").append(node.getText()).append("\"");
+
+        // text
+        if (node.getText() != null && node.getText().length() > 0) {
+            CharSequence text = node.getText();
+            if (text.length() > 200) {
+                sb.append(" text=\"").append(text.subSequence(0, 200)).append("...\"");
+            } else {
+                sb.append(" text=\"").append(text).append("\"");
+            }
         }
-        if (node.getContentDescription() != null) {
+
+        // contentDescription
+        if (node.getContentDescription() != null && node.getContentDescription().length() > 0) {
             sb.append(" desc=\"").append(node.getContentDescription()).append("\"");
         }
-        if (node.isClickable()) {
-            sb.append(" [clickable]");
-        }
-        if (node.isScrollable()) {
-            sb.append(" [scrollable]");
-        }
-        if (node.isFocusable()) {
-            sb.append(" [focusable]");
-        }
-        if (node.isEditable()) {
-            sb.append(" [editable]");
+
+        // resource-id
+        String resId = node.getViewIdResourceName();
+        if (resId != null && !resId.isEmpty()) {
+            sb.append(" id=\"").append(resId).append("\"");
         }
 
+        // package
+        if (node.getPackageName() != null) {
+            sb.append(" pkg=\"").append(node.getPackageName()).append("\"");
+        }
+
+        // interaction states
+        if (node.isClickable()) sb.append(" [clickable]");
+        if (node.isLongClickable()) sb.append(" [long-clickable]");
+        if (node.isScrollable()) sb.append(" [scrollable]");
+        if (node.isEditable()) sb.append(" [editable]");
+        if (node.isCheckable()) sb.append(node.isChecked() ? " [checked]" : " [unchecked]");
+        if (!node.isEnabled()) sb.append(" [disabled]");
+        if (node.isFocused()) sb.append(" [focused]");
+        if (node.isSelected()) sb.append(" [selected]");
+        if (!node.isVisibleToUser()) sb.append(" [invisible]");
+
+        // slider range info
+        if (isSliderNode(node)) {
+            sb.append(" [slider]");
+            AccessibilityNodeInfo.RangeInfo rangeInfo = node.getRangeInfo();
+            if (rangeInfo != null) {
+                sb.append(String.format(" range=[%.0f-%.0f, current=%.0f]",
+                        rangeInfo.getMin(), rangeInfo.getMax(), rangeInfo.getCurrent()));
+            }
+        }
+
+        // progress bar
+        CharSequence cn = node.getClassName();
+        if (cn != null && cn.toString().contains("ProgressBar")) {
+            sb.append(" [loading]");
+        }
+
+        // bounds
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
         sb.append(" bounds=").append(bounds.toShortString());
 
         sb.append("\n");
 
+        // recurse all children
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo child = node.getChild(i);
             if (child != null) {
-                buildNodeTree(child, sb, depth + 1);
+                buildNodeTreeFull(child, sb, depth + 1);
                 child.recycle();
             }
         }
@@ -290,9 +444,6 @@ public class ClawAccessibilityService extends AccessibilityService {
         }
         StringBuilder sb = new StringBuilder();
         sb.append("class=").append(node.getClassName());
-        if (node.getViewIdResourceName() != null) {
-            sb.append(", id=").append(node.getViewIdResourceName());
-        }
         if (node.getText() != null) {
             sb.append(", text=\"").append(node.getText()).append("\"");
         }
@@ -306,6 +457,22 @@ public class ClawAccessibilityService extends AccessibilityService {
         node.getBoundsInScreen(bounds);
         sb.append(", bounds=").append(bounds.toShortString());
         return sb.toString();
+    }
+
+    // ======================== Slider Detection (for buildNodeTree) ========================
+
+    /**
+     * Check if a node is a slider/seekbar type.
+     * Used by buildNodeTree to ensure slider nodes are included in screen info.
+     */
+    private boolean isSliderNode(AccessibilityNodeInfo node) {
+        CharSequence className = node.getClassName();
+        if (className == null) return false;
+        String cls = className.toString();
+        return cls.contains("SeekBar")
+                || cls.contains("Slider")
+                || cls.contains("RatingBar")
+                || node.getRangeInfo() != null;
     }
 
     // ======================== Global Actions ========================
@@ -335,6 +502,39 @@ public class ClawAccessibilityService extends AccessibilityService {
             return performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN);
         }
         return false;
+    }
+
+    /**
+     * Attempts to unlock the screen: wake up + swipe up.
+     * Works for no-password / swipe lock screens.
+     * If the device has PIN/pattern/password, the swipe will bring up the input screen.
+     */
+    public boolean unlockScreen() {
+        try {
+            // 1. 唤醒屏幕
+            android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+            if (pm != null && !pm.isInteractive()) {
+                @SuppressWarnings("deprecation")
+                android.os.PowerManager.WakeLock wl = pm.newWakeLock(
+                        android.os.PowerManager.SCREEN_DIM_WAKE_LOCK | android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                        "ApkClaw:unlock"
+                );
+                wl.acquire(3000);
+                wl.release();
+                // 等屏幕亮起
+                try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+            }
+
+            // 2. 模拟上滑手势解锁
+            android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+            int centerX = dm.widthPixels / 2;
+            int bottomY = (int) (dm.heightPixels * 0.8);
+            int topY = (int) (dm.heightPixels * 0.2);
+            return performSwipe(centerX, bottomY, centerX, topY, 300);
+        } catch (Exception e) {
+            XLog.e(TAG, "unlockScreen failed", e);
+            return false;
+        }
     }
 
     // ======================== Screenshot ========================

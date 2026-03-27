@@ -204,6 +204,33 @@ class TelegramChannelHandler(
         }
     }
 
+    override fun getLastSenderId(): String? = lastChatId?.toString()
+
+    override fun restoreRoutingContext(targetUserId: String) {
+        targetUserId.toLongOrNull()?.let { lastChatId = it }
+    }
+
+    override fun sendMessageToUser(userId: String, content: String) {
+        val chatId = userId.toLongOrNull()
+        if (chatId == null) {
+            XLog.w(TAG, "Telegram sendMessageToUser 失败：无效的 chatId: $userId")
+            return
+        }
+        scope.launch {
+            try {
+                if (TelegramMarkdownUtils.containsMarkdown(content)) {
+                    val v2 = TelegramMarkdownUtils.markdownToTelegramV2(content)
+                    val ok = sendText(chatId, v2, "MarkdownV2")
+                    if (!ok) sendText(chatId, content, null)
+                } else {
+                    sendText(chatId, TelegramMarkdownUtils.escapePlain(content), "MarkdownV2")
+                }
+            } catch (e: Exception) {
+                XLog.e(TAG, "Telegram sendMessageToUser 失败", e)
+            }
+        }
+    }
+
     // ---------- 内部工具方法 ----------
 
     private fun sendText(chatId: Long, text: String, parseMode: String?): Boolean {

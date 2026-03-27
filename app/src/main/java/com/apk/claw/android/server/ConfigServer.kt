@@ -49,6 +49,7 @@ class ConfigServer(
                 uri == "/debug.html" && method == Method.GET && BuildConfig.DEBUG -> serveDebugHtml()
                 uri == "/api/debug/tools" && method == Method.GET && BuildConfig.DEBUG -> handleGetTools()
                 uri == "/api/debug/execute" && method == Method.POST && BuildConfig.DEBUG -> handleExecuteTool(session)
+                uri == "/api/debug/screen-full" && method == Method.GET && BuildConfig.DEBUG -> handleGetScreenFull()
                 uri.startsWith("/api/debug/file") && method == Method.GET && BuildConfig.DEBUG -> handleServeFile(session)
                 else -> corsResponse(
                     newFixedLengthResponse(
@@ -209,7 +210,7 @@ class ConfigServer(
     private fun handleGetLlm(): Response {
         val apiKey = KVUtils.getLlmApiKey()
         val data = JsonObject().apply {
-            addProperty("llmApiKey", maskSecret(apiKey))
+            addProperty("llmApiKey", apiKey)
             addProperty("llmBaseUrl", KVUtils.getLlmBaseUrl())
             addProperty("llmModelName", KVUtils.getLlmModelName())
         }
@@ -261,6 +262,26 @@ class ConfigServer(
     }
 
     // ==================== Debug (仅 DEBUG 构建) ====================
+    
+    private fun handleGetScreenFull(): Response {
+        val service = com.apk.claw.android.service.ClawAccessibilityService.getInstance()
+            ?: return corsResponse(
+                newFixedLengthResponse(
+                    Response.Status.OK, MIME_JSON,
+                    """{"code":-1,"message":"Accessibility service is not running"}"""
+                )
+            )
+        val tree = service.screenTreeFull
+        val data = JsonObject().apply {
+            addProperty("success", tree != null)
+            addProperty("data", tree ?: "")
+        }
+        val result = JsonObject().apply {
+            addProperty("code", 0)
+            add("data", data)
+        }
+        return corsResponse(newFixedLengthResponse(Response.Status.OK, MIME_JSON, result.toString()))
+    }
 
     private fun serveDebugHtml(): Response {
         val inputStream = context.assets.open("web/debug.html")

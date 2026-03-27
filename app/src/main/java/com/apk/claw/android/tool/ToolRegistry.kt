@@ -29,17 +29,13 @@ object ToolRegistry {
         register(GetScreenInfoTool())
         register(FindNodeInfoTool())
         register(InputTextTool())
-        register(PressBackTool())
-        register(PressHomeTool())
-        register(OpenRecentAppsTool())
-        register(ExpandNotificationsTool())
-        register(CollapseNotificationsTool())
+        register(SystemKeyTool())
         register(OpenAppTool())
         register(GetInstalledAppsTool())
-        register(LockScreenTool())
         register(TakeScreenshotTool())
         register(WaitTool())
         register(RepeatActionsTool())
+        register(ClipboardTool())
         register(SendFileTool())
         register(FinishTool())
     }
@@ -60,8 +56,7 @@ object ToolRegistry {
         register(TapTool())
         register(LongPressTool())
         register(SwipeTool())
-        register(ClickByTextTool())
-        register(ClickByIdTool())
+        register(ScrollToFindTool())
     }
 
     fun register(tool: BaseTool) {
@@ -77,7 +72,7 @@ object ToolRegistry {
     fun executeTool(name: String, params: Map<String, Any>): ToolResult {
         val tool = tools[name] ?: return ToolResult.error("Unknown tool: $name")
         return try {
-            tool.execute(params)
+            tool.executeWithWaitAfter(params)
         } catch (e: Exception) {
             ToolResult.error("Tool execution failed: ${e.message}")
         }

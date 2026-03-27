@@ -16,6 +16,8 @@
     <string name="channel_qq">QQ</string>
     <string name="channel_discord">Discord</string>
     <string name="channel_telegram">Telegram</string>
+    <string name="channel_wechat">微信</string>
+    <string name="common_load_failed">加载失败: %s</string>
 
     <string name="app_slogan">一款能做事的AI Agents</string>
 
@@ -88,6 +90,18 @@
     <string name="channel_config_telegram_title">Telegram 配置</string>
     <string name="channel_config_telegram_tip">填入 Bot Token（在 Telegram 中通过 @BotFather 创建 Bot 获取）</string>
     <string name="channel_config_telegram_hint1">输入获取到的 Bot Token</string>
+    <string name="channel_config_wechat_title">微信配置</string>
+    <string name="channel_config_wechat_tip">使用微信扫描二维码授权机器人。确认后 Token 和 API 地址将自动保存。</string>
+    <string name="channel_config_wechat_btn_scan">获取二维码</string>
+    <string name="channel_config_wechat_scanning">等待扫码…</string>
+    <string name="channel_config_wechat_confirmed">授权成功</string>
+    <string name="wechat_qr_failed">获取微信二维码失败</string>
+    <string name="wechat_unsupported_media">收到了%s消息，暂不支持该类型，请发送文字指令</string>
+    <string name="wechat_media_image">图片</string>
+    <string name="wechat_media_video">视频</string>
+    <string name="wechat_media_file">文件</string>
+    <string name="wechat_media_voice">语音</string>
+    <string name="wechat_media_unknown">媒体</string>
     <string name="channel_config_saved">配置已保存</string>
     <string name="channel_config_lan_hint">💡 在设置页开启「局域网配置」，即可通过电脑浏览器配置</string>
     <string name="channel_config_lan_hint_running">💡 电脑浏览器打开 %s 即可配置</string>
@@ -112,6 +126,7 @@
     <string name="menu_qq">QQ</string>
     <string name="menu_discord">Discord</string>
     <string name="menu_telegram">Telegram</string>
+    <string name="menu_wechat">微信</string>
     <string name="menu_lan_config">局域网配置</string>
     <string name="lan_config_stopped">已关闭</string>
     <string name="lan_config_no_wifi">请先连接 WiFi</string>
@@ -124,6 +139,7 @@
 
     <!-- 悬浮窗 -->
     <string name="floating_ai_label">AI</string>
+    <string name="floating_task_received">已收到：\"%s\"</string>
 
     <!-- 前台服务通知 -->
     <string name="notification_channel_name">ApkClaw 运行状态</string>
@@ -136,7 +152,7 @@
     <string name="channel_msg_service_not_ready">服务未就绪，请稍后重试</string>
     <string name="channel_msg_tool_success">成功</string>
     <string name="channel_msg_tool_failure">失败</string>
-    <string name="channel_msg_tool_execution">执行[%1$s]：%2$s</string>
+    <string name="channel_msg_tool_execution">[%1$s]：%2$s</string>
     <string name="channel_msg_task_error">遇到了错误：%s</string>
     <string name="channel_msg_no_accessibility">缺少无障碍权限，无法执行任务</string>
     <string name="channel_msg_task_in_progress">有任务执行中，请稍候</string>
@@ -144,6 +160,20 @@
 
     <!-- 无障碍 -->
     <string name="cd_back_button">返回</string>
+    <string name="cd_settings">设置</string>
+    <string name="cd_clear_input">清除输入</string>
+    <string name="cd_checkbox">切换选中状态</string>
+    <string name="cd_selected">已选中</string>
+    <string name="cd_task_success">任务完成</string>
+    <string name="cd_task_error">任务失败</string>
+    <string name="cd_channel_logo">渠道图标</string>
+    <string name="cd_app_logo">应用图标</string>
+    <string name="cd_qr_code">二维码</string>
+    <string name="cd_toggle_password">显示或隐藏密码</string>
+    <string name="cd_copy">复制</string>
+    <string name="cd_arrow_right">更多</string>
+    <string name="cd_empty_state">暂无数据</string>
+    <string name="cd_error_state">加载失败</string>
 
     <!-- Agent 服务 -->
     <string name="agent_accessibility_not_enabled">无障碍服务未开启，无法执行任务</string>
@@ -169,18 +199,11 @@
     <string name="tool_name_finish">完成任务</string>
     <string name="tool_name_open_app">打开应用</string>
     <string name="tool_name_get_installed_apps">获取应用列表</string>
-    <string name="tool_name_press_home">回到桌面</string>
-    <string name="tool_name_press_back">返回</string>
-    <string name="tool_name_click_by_text">点击文字</string>
+    <string name="tool_name_system_key">系统按键</string>
     <string name="tool_name_tap">点击</string>
     <string name="tool_name_swipe">滑动</string>
     <string name="tool_name_input_text">输入文本</string>
-    <string name="tool_name_lock_screen">锁屏</string>
-    <string name="tool_name_expand_notifications">展开通知栏</string>
-    <string name="tool_name_collapse_notifications">收起通知栏</string>
     <string name="tool_name_find_node_info">查找节点</string>
-    <string name="tool_name_open_recent_apps">最近任务</string>
-    <string name="tool_name_click_by_id">点击元素</string>
     <string name="tool_name_long_press">长按</string>
     <string name="tool_name_repeat_actions">重复执行动作</string>
     <string name="tool_name_volume_up">音量+</string>
@@ -193,6 +216,8 @@
     <string name="tool_name_press_menu">菜单</string>
     <string name="tool_name_press_power">电源</string>
     <string name="tool_name_search_app">搜索APP</string>
+    <string name="tool_name_clipboard">剪贴板</string>
+    <string name="tool_name_scroll_to_find">滚动查找</string>
 
     <!-- 输入弹窗 -->
     <string name="input_dialog_need_more">至少输入%d个字符</string>
