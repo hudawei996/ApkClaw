@@ -43,18 +43,23 @@ class WeChatChannelHandler(
             return
         }
 
+        XLog.i(TAG, "=== 微信通道初始化开始 ===")
+        XLog.i(TAG, "Bot Token: ${botToken.take(8)}...${botToken.takeLast(4)}")
+        XLog.i(TAG, "API Base URL: $apiBaseUrl")
+
         apiClient.setBotToken(botToken)
         apiClient.setBaseUrl(apiBaseUrl)
 
         // 从 MMKV 恢复 contextToken（对应 2.0.1 restoreContextTokens）
         WeChatInbound.restoreContextTokens(accountId)
+        XLog.i(TAG, "已恢复 contextToken，accountId=$accountId")
 
         pollingActive = true
         pollingThread = Thread({
             runMonitorLoop()
         }, "wechat-monitor").apply { isDaemon = true; start() }
 
-        XLog.i(TAG, "微信通道已启动")
+        XLog.i(TAG, "微信通道已启动，开始长轮询监听消息")
     }
 
     /**
@@ -66,29 +71,46 @@ class WeChatChannelHandler(
         var getUpdatesBuf = KVUtils.getWechatUpdatesCursor()
         var nextTimeoutMs = DEFAULT_LONG_POLL_TIMEOUT_MS
         var consecutiveFailures = 0
+        var totalMessagesProcessed = 0
+        val startTime = System.currentTimeMillis()
 
-        XLog.i(TAG, "monitor 启动: baseUrl=$apiBaseUrl, cursor=${if (getUpdatesBuf.isEmpty()) "(空)" else "...${getUpdatesBuf.takeLast(20)}"}")
+        XLog.i(TAG, "=== 微信长轮询监控启动 ===")
+        XLog.i(TAG, "baseUrl=$apiBaseUrl")
+        XLog.i(TAG, "cursor=${if (getUpdatesBuf.isEmpty()) "(空)" else "...${getUpdatesBuf.takeLast(20)}"}")
+        XLog.i(TAG, "超时设置: ${nextTimeoutMs}ms")
 
         while (pollingActive) {
             try {
+                // 检查运行时间，防止长时间运行导致资源泄漏
+                val runningTimeMinutes = (System.currentTimeMillis() - startTime) / 60000
+                if (runningTimeMinutes > 60 && totalMessagesProcessed == 0) {
+                    XLog.w(TAG, "微信通道已运行${runningTimeMinutes}分钟但未处理任何消息，可能存在配置问题")
+                }
+
                 // session guard 检查
                 if (WeChatApiClient.isSessionPaused(accountId)) {
                     val remainMs = WeChatApiClient.getRemainingPauseMs(accountId)
-                    XLog.w(TAG, "session paused, sleeping ${remainMs / 1000}s")
+                    XLog.w(TAG, "会话已暂停，等待 ${remainMs / 1000}s 后重试")
                     Thread.sleep(remainMs.coerceAtMost(30_000))
                     continue
                 }
 
+                XLog.d(TAG, "发起 getUpdates 请求...")
                 val resp = apiClient.getUpdates(getUpdatesBuf)
+
                 if (resp == null) {
                     consecutiveFailures++
+                    XLog.w(TAG, "getUpdates 返回null，连续失败次数: $consecutiveFailures")
                     handleConsecutiveFailures(consecutiveFailures)
                     continue
                 }
 
                 // 自适应超时（monitor.ts: 使用服务端返回的 longpolling_timeout_ms）
                 resp.longpollingTimeoutMs?.let {
-                    if (it > 0) nextTimeoutMs = it
+                    if (it > 0 && it != nextTimeoutMs) {
+                        XLog.d(TAG, "服务端调整超时时间: ${nextTimeoutMs}ms → ${it}ms")
+                        nextTimeoutMs = it
+                    }
                 }
 
                 // 检查 API 错误（monitor.ts: 同时检查 ret 和 errcode）
@@ -100,43 +122,52 @@ class WeChatChannelHandler(
                     if (isSessionExpired) {
                         WeChatApiClient.pauseSession(accountId)
                         val pauseMs = WeChatApiClient.getRemainingPauseMs(accountId)
-                        XLog.e(TAG, "session expired (errcode=$SESSION_EXPIRED_ERRCODE), pausing ${pauseMs / 60_000} min")
+                        XLog.e(TAG, "会话过期 (errcode=$SESSION_EXPIRED_ERRCODE)，暂停 ${pauseMs / 60_000} 分钟")
                         consecutiveFailures = 0
                         Thread.sleep(pauseMs.coerceAtMost(30_000))
                         continue
                     }
 
                     consecutiveFailures++
-                    XLog.e(TAG, "getUpdates 错误: ret=${resp.ret}, errcode=${resp.errcode}, errmsg=${resp.errmsg} ($consecutiveFailures/$MAX_CONSECUTIVE_FAILURES)")
+                    XLog.e(TAG, "getUpdates API错误: ret=${resp.ret}, errcode=${resp.errcode}, errmsg=${resp.errmsg} ($consecutiveFailures/$MAX_CONSECUTIVE_FAILURES)")
                     handleConsecutiveFailures(consecutiveFailures)
                     continue
                 }
 
+                if (consecutiveFailures > 0) {
+                    XLog.i(TAG, "连接恢复正常")
+                }
                 consecutiveFailures = 0
 
                 // 更新游标（无论是否有新消息都要更新，防止重复）
                 if (!resp.getUpdatesBuf.isNullOrEmpty() && resp.getUpdatesBuf != getUpdatesBuf) {
                     getUpdatesBuf = resp.getUpdatesBuf
                     KVUtils.setWechatUpdatesCursor(getUpdatesBuf)
+                    XLog.d(TAG, "更新消息游标")
                 }
 
                 // 处理消息
                 val msgs = resp.msgs ?: emptyList()
+                if (msgs.isNotEmpty()) {
+                    XLog.i(TAG, "收到 ${msgs.size} 条新消息")
+                }
                 for (msg in msgs) {
                     processInboundMessage(msg)
+                    totalMessagesProcessed++
                 }
 
             } catch (_: InterruptedException) {
+                XLog.i(TAG, "监控循环被中断退出")
                 break
             } catch (e: Exception) {
                 if (pollingActive) {
                     consecutiveFailures++
-                    XLog.w(TAG, "monitor 异常 ($consecutiveFailures/$MAX_CONSECUTIVE_FAILURES)", e)
+                    XLog.w(TAG, "监控异常 ($consecutiveFailures/$MAX_CONSECUTIVE_FAILURES): ${e.message}", e)
                     handleConsecutiveFailures(consecutiveFailures)
                 }
             }
         }
-        XLog.i(TAG, "monitor 已退出")
+        XLog.i(TAG, "=== 微信监控循环已退出 ===")
     }
 
     /** 处理连续失败退避（monitor.ts: 3 次失败 → 30s 退避） */
@@ -159,11 +190,20 @@ class WeChatChannelHandler(
      */
     private fun processInboundMessage(msg: WeChatMessage) {
         val fromUserId = msg.fromUserId
-        if (fromUserId.isEmpty()) return
+        if (fromUserId.isEmpty()) {
+            XLog.w(TAG, "消息fromUserId为空，跳过")
+            return
+        }
+
+        XLog.i(TAG, "--- 处理微信消息 ---")
+        XLog.i(TAG, "发送者: ...${fromUserId.takeLast(16)}")
+        XLog.i(TAG, "消息类型: ${msg.messageType}")
+        XLog.i(TAG, "创建时间: ${msg.createTimeMs}")
 
         // 缓存 contextToken（对应 inbound.ts setContextToken）
         if (!msg.contextToken.isNullOrEmpty()) {
             WeChatInbound.setContextToken(accountId, fromUserId, msg.contextToken)
+            XLog.d(TAG, "缓存 contextToken: ...${msg.contextToken.takeLast(8)}")
         }
 
         // 打印完整的 item_list 详情（便于调试图片/语音/文件等消息结构）
@@ -176,32 +216,24 @@ class WeChatChannelHandler(
                 MessageItemType.VIDEO -> "VIDEO"
                 else -> "UNKNOWN(${item.type})"
             }
-            XLog.i(TAG, "  item[$index] type=$typeStr")
-            item.textItem?.let { XLog.i(TAG, "    text_item: text=${it.text?.take(80)}") }
+            XLog.i(TAG, "  内容项[$index]: type=$typeStr")
+            item.textItem?.let {
+                XLog.i(TAG, "    文本: ${it.text?.take(100)}${if (it.text?.length ?: 0 > 100) "..." else ""}")
+            }
             item.imageItem?.let { img ->
-                XLog.i(TAG, "    image_item:")
-                XLog.i(TAG, "      media.encrypt_query_param=${img.media?.encryptQueryParam?.take(60)}...")
-                XLog.i(TAG, "      media.aes_key=${img.media?.aesKey?.take(30)}...")
-                XLog.i(TAG, "      media.encrypt_type=${img.media?.encryptType}")
-                XLog.i(TAG, "      aeskey(hex)=${img.aeskey?.take(30)}")
-                XLog.i(TAG, "      mid_size=${img.midSize}, hd_size=${img.hdSize}, thumb_size=${img.thumbSize}")
-                XLog.i(TAG, "      thumb_media.encrypt_query_param=${img.thumbMedia?.encryptQueryParam?.take(40)}...")
-                XLog.i(TAG, "      url=${img.url}")
+                XLog.i(TAG, "    图片: media信息已接收")
             }
             item.voiceItem?.let { v ->
-                XLog.i(TAG, "    voice_item: text=${v.text}, playtime=${v.playtime}, encode_type=${v.encodeType}")
-                XLog.i(TAG, "      media.encrypt_query_param=${v.media?.encryptQueryParam?.take(40)}...")
+                XLog.i(TAG, "    语音: text=${v.text}, playtime=${v.playtime}")
             }
             item.fileItem?.let { f ->
-                XLog.i(TAG, "    file_item: file_name=${f.fileName}, len=${f.len}")
-                XLog.i(TAG, "      media.encrypt_query_param=${f.media?.encryptQueryParam?.take(40)}...")
+                XLog.i(TAG, "    文件: name=${f.fileName}, size=${f.len}")
             }
             item.videoItem?.let { v ->
-                XLog.i(TAG, "    video_item: video_size=${v.videoSize}")
-                XLog.i(TAG, "      media.encrypt_query_param=${v.media?.encryptQueryParam?.take(40)}...")
+                XLog.i(TAG, "    视频: size=${v.videoSize}")
             }
             item.refMsg?.let { ref ->
-                XLog.i(TAG, "    ref_msg: title=${ref.title}, item_type=${ref.messageItem?.type}")
+                XLog.i(TAG, "    引用消息: title=${ref.title}")
             }
         }
 
@@ -220,22 +252,31 @@ class WeChatChannelHandler(
                 }
             } ?: emptyList()
             if (mediaTypes.isNotEmpty()) {
-                XLog.i(TAG, "收到纯媒体消息: types=$mediaTypes, from=${fromUserId.takeLast(16)}")
+                XLog.i(TAG, "收到纯媒体消息: types=$mediaTypes")
                 val tip = app.getString(com.apk.claw.android.R.string.wechat_unsupported_media, mediaTypes.joinToString("+"))
                 val contextToken = msg.contextToken ?: ""
                 scope.launch {
+                    XLog.i(TAG, "发送媒体不支持提示")
                     WeChatSender.sendText(apiClient, fromUserId, tip, contextToken.ifEmpty { null })
                 }
             } else {
-                XLog.d(TAG, "消息无内容，跳过: from=${fromUserId.takeLast(16)}")
+                XLog.d(TAG, "消息无内容，跳过")
             }
             return
         }
 
-        XLog.i(TAG, "[${channel.displayName}] 收到消息: ${body.take(80)}, from=${fromUserId.takeLast(16)}")
+        XLog.i(TAG, "=== 消息内容 ===")
+        XLog.i(TAG, body)
+        XLog.i(TAG, "==================")
+
         lastFromUserId = fromUserId
+
+        // 分发消息到ChannelManager，触发任务处理
+        XLog.i(TAG, "分发消息到ChannelManager，准备触发任务处理")
         ChannelManager.dispatchMessage(channel, body, msg.contextToken ?: "")
+        XLog.i(TAG, "消息分发完成")
     }
+
 
     // ==================== ChannelHandler 接口实现 ====================
 
@@ -330,9 +371,16 @@ class WeChatChannelHandler(
     override fun sendMessage(content: String, messageID: String) {
         val fromUserId = resolveToUserId(messageID) ?: return
         val contextToken = resolveContextToken(fromUserId, messageID)
+
+        XLog.d(TAG, ">>> 发送消息到微信")
+        XLog.d(TAG, "目标用户: ...${fromUserId.takeLast(16)}")
+        XLog.d(TAG, "消息长度: ${content.length} 字符")
+        XLog.d(TAG, "消息预览: ${content.take(80)}${if (content.length > 80) "..." else ""}")
+
         synchronized(messageBuffer) {
             // 如果目标用户变了，先 flush 旧的
             if (bufferUserId != null && bufferUserId != fromUserId) {
+                XLog.d(TAG, "目标用户切换，flush旧缓冲区")
                 flushMessageBuffer()
             }
             messageBuffer.add(content)
@@ -340,6 +388,7 @@ class WeChatChannelHandler(
             bufferContextToken = contextToken
             // 只在第一条消息时启动定时器（不重置）
             if (flushJob == null) {
+                XLog.d(TAG, "启动消息缓冲定时器 (${BUFFER_DELAY_MS}ms)")
                 flushJob = scope.launch {
                     kotlinx.coroutines.delay(BUFFER_DELAY_MS)
                     tryFlush()

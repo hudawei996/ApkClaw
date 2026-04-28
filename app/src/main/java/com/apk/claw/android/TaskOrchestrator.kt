@@ -116,21 +116,31 @@ class TaskOrchestrator(
     }
 
     fun startNewTask(channel: Channel, task: String, messageID: String) {
+        XLog.i(TAG, "=== 开始新任务 ===")
+        XLog.i(TAG, "通道: ${channel.displayName}")
+        XLog.i(TAG, "任务内容: ${task.take(100)}${if (task.length > 100) "..." else ""}")
+        XLog.i(TAG, "消息ID: ${messageID.take(20)}")
+        
         if (!::agentService.isInitialized) {
-            XLog.e(TAG, "AgentService not initialized, attempting to initialize")
+            XLog.e(TAG, "AgentService 未初始化，尝试初始化")
             try {
                 agentService = AgentServiceFactory.create()
-                agentService.initialize(agentConfigProvider())
+                val config = agentConfigProvider()
+                XLog.i(TAG, "LLM配置 - Provider: ${config.provider}, Model: ${config.modelName}, BaseURL: ${config.baseUrl}")
+                agentService.initialize(config)
+                XLog.i(TAG, "AgentService 初始化成功")
             } catch (e: Exception) {
-                XLog.e(TAG, "Failed to initialize AgentService", e)
+                XLog.e(TAG, "AgentService 初始化失败", e)
                 releaseTask()
                 ChannelManager.sendMessage(channel, ClawApplication.instance.getString(R.string.channel_msg_service_not_ready), messageID)
                 return
             }
         }
 
+        XLog.i(TAG, "按下Home键，准备执行任务")
         ClawAccessibilityService.getInstance()?.pressHome()
 
+        XLog.i(TAG, "显示悬浮窗通知")
         FloatingCircleManager.showTaskNotify(task, channel)
 
         // 每轮消息聚合缓冲：thinking + toolResult 攒成一条，减少发送次数
@@ -138,41 +148,54 @@ class TaskOrchestrator(
 
         fun flushRoundBuffer() {
             if (roundBuffer.isNotEmpty()) {
-                ChannelManager.sendMessage(channel, roundBuffer.toString().trim(), messageID)
+                val content = roundBuffer.toString().trim()
+                XLog.i(TAG, "发送本轮累积消息 (${content.length} 字符)")
+                ChannelManager.sendMessage(channel, content, messageID)
                 roundBuffer.clear()
             }
         }
 
+        XLog.i(TAG, "开始执行Agent任务")
         agentService.executeTask(task, object : AgentCallback {
             override fun onLoopStart(round: Int) {
                 // 新一轮开始前，flush 上一轮积攒的消息
                 flushRoundBuffer()
+                XLog.i(TAG, "--- LLM推理轮次 $round 开始 ---")
                 FloatingCircleManager.setRunningState(round, channel)
             }
 
             override fun onContent(round: Int, content: String) {
                 if (content.isNotEmpty()) {
+                    XLog.d(TAG, "LLM输出内容 (轮次$round): ${content.take(50)}${if (content.length > 50) "..." else ""}")
                     roundBuffer.append(content)
                 }
             }
 
             override fun onToolCall(round: Int, toolId: String, toolName: String, parameters: String) {
-                XLog.d(TAG, "onToolCall: $toolId($toolName), $parameters")
+                XLog.i(TAG, "[轮次$round] 调用工具: $toolName")
+                XLog.i(TAG, "  参数: $parameters")
             }
 
             override fun onToolResult(round: Int, toolId: String, toolName: String, parameters: String, result: ToolResult) {
                 val app = ClawApplication.instance
                 val status = if (result.isSuccess) app.getString(R.string.channel_msg_tool_success) else app.getString(R.string.channel_msg_tool_failure)
                 var data = if (result.isSuccess) result.data else result.error
-                if (data != null && data.length > 300) {
-                    data = data.substring(0, 300) + "...(truncated)"
+                
+                XLog.i(TAG, "[轮次$round] 工具结果: $toolName - $status")
+                
+                if (data != null) {
+                    val preview = if (data.length > 200) data.substring(0, 200) + "..." else data
+                    XLog.i(TAG, "  结果数据: $preview")
                 }
+                
                 if (!result.isSuccess) {
-                    XLog.e(TAG, "!!!!!!!!!!Fail: $toolName, $parameters $data")
+                    XLog.e(TAG, "  ❌ 工具执行失败: $toolName")
+                    XLog.e(TAG, "  错误详情: $data")
                 }
-                XLog.e(TAG, "onToolResult: $toolName, $status $data")
+                
                 if (toolId == "finish" && (result.data?.isNotEmpty() ?: false)) {
                     // finish 的结果单独发，不合并（这是最终回复）
+                    XLog.i(TAG, "收到最终回复，立即发送")
                     flushRoundBuffer()
                     ChannelManager.sendMessage(channel, result.data, messageID)
                 } else {
@@ -185,16 +208,27 @@ class TaskOrchestrator(
             }
 
             override fun onComplete(round: Int, finalAnswer: String, totalTokens: Int) {
-                XLog.i(TAG, "onComplete: 轮数=$round, totalTokens=$totalTokens, answer=$finalAnswer")
+                XLog.i(TAG, "=== 任务完成 ===")
+                XLog.i(TAG, "总轮数: $round")
+                XLog.i(TAG, "总Token数: $totalTokens")
+                XLog.i(TAG, "最终答案长度: ${finalAnswer.length} 字符")
+                XLog.i(TAG, "最终答案预览: ${finalAnswer.take(100)}${if (finalAnswer.length > 100) "..." else ""}")
+                
                 flushRoundBuffer()
                 releaseTask()
                 ChannelManager.flushMessages(channel)
                 FloatingCircleManager.setSuccessState()
                 onTaskFinished()
+                XLog.i(TAG, "任务清理完成")
             }
 
             override fun onError(round: Int, error: Exception, totalTokens: Int) {
-                XLog.e(TAG, "onError: ${error.message}, totalTokens=$totalTokens", error)
+                XLog.e(TAG, "=== 任务出错 ===")
+                XLog.e(TAG, "轮次: $round")
+                XLog.e(TAG, "总Token数: $totalTokens")
+                XLog.e(TAG, "错误信息: ${error.message}")
+                XLog.e(TAG, "错误堆栈:", error)
+                
                 flushRoundBuffer()
                 releaseTask()
                 ChannelManager.sendMessage(channel, ClawApplication.instance.getString(R.string.channel_msg_task_error, error.message), messageID)
@@ -204,7 +238,10 @@ class TaskOrchestrator(
             }
 
             override fun onSystemDialogBlocked(round: Int, totalTokens: Int) {
-                XLog.w(TAG, "onSystemDialogBlocked: round=$round, totalTokens=$totalTokens")
+                XLog.w(TAG, "=== 系统弹窗阻塞 ===")
+                XLog.w(TAG, "轮次: $round")
+                XLog.w(TAG, "总Token数: $totalTokens")
+                
                 flushRoundBuffer()
                 releaseTask()
                 ChannelManager.sendMessage(channel, ClawApplication.instance.getString(R.string.channel_msg_system_dialog_blocked), messageID)
@@ -212,13 +249,14 @@ class TaskOrchestrator(
                     val service = ClawAccessibilityService.getInstance()
                     val bitmap = service?.takeScreenshot(5000)
                     if (bitmap != null) {
+                        XLog.i(TAG, "截取屏幕成功，发送截图")
                         val stream = java.io.ByteArrayOutputStream()
                         bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 80, stream)
                         bitmap.recycle()
                         ChannelManager.sendImage(channel, stream.toByteArray(), messageID)
                     }
                 } catch (e: Exception) {
-                    XLog.e(TAG, "Failed to send screenshot for system dialog", e)
+                    XLog.e(TAG, "发送截图失败", e)
                 }
                 FloatingCircleManager.setErrorState()
                 onTaskFinished()

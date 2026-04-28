@@ -216,6 +216,18 @@ object ChannelManager {
      */
     @JvmStatic
     fun dispatchMessage(channel: Channel, message: String, messageID: String) {
-        messageListener?.onMessageReceived(channel, message, messageID)
+        XLog.i(TAG, "=== 消息分发 ===")
+        XLog.i(TAG, "通道: ${channel.displayName}")
+        XLog.i(TAG, "消息长度: ${message.length} 字符")
+        XLog.i(TAG, "消息预览: ${message.take(80)}${if (message.length > 80) "..." else ""}")
+        XLog.i(TAG, "MessageID: ${messageID.take(20)}${if (messageID.length > 20) "..." else ""}")
+        
+        if (messageListener != null) {
+            XLog.i(TAG, "有注册的监听器，调用onMessageReceived")
+            messageListener?.onMessageReceived(channel, message, messageID)
+            XLog.i(TAG, "监听器处理完成")
+        } else {
+            XLog.w(TAG, "警告: 没有注册消息监听器！")
+        }
     }
 }

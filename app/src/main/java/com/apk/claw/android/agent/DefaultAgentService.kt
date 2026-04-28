@@ -62,7 +62,18 @@ class DefaultAgentService : AgentService {
         this.llmClient = LlmClientFactory.create(config)
         this.toolSpecs = LangChain4jToolBridge.buildToolSpecifications()
         this.executor = Executors.newSingleThreadExecutor()
-        XLog.i(TAG, "Agent initialized: provider=${config.provider}, model=${config.modelName}, streaming=${config.streaming}")
+        
+        XLog.i(TAG, "========================================")
+        XLog.i(TAG, "Agent Service 初始化")
+        XLog.i(TAG, "Provider: ${config.provider}")
+        XLog.i(TAG, "Model: ${config.modelName}")
+        XLog.i(TAG, "Base URL: ${config.baseUrl}")
+        XLog.i(TAG, "Temperature: ${config.temperature}")
+        XLog.i(TAG, "Max Iterations: ${config.maxIterations}")
+        XLog.i(TAG, "Streaming: ${config.streaming}")
+        XLog.i(TAG, "工具数量: ${toolSpecs.size}")
+        XLog.i(TAG, "文件日志: ${if (FILE_LOGGING_ENABLED) "启用 (${FILE_LOGGING_CACHE_DIR})" else "禁用"}")
+        XLog.i(TAG, "========================================")
     }
 
     override fun updateConfig(config: AgentConfig) {
@@ -148,28 +159,93 @@ class DefaultAgentService : AgentService {
         for (attempt in 0 until MAX_API_RETRIES) {
             if (cancelled.get()) throw RuntimeException(ClawApplication.instance.getString(R.string.agent_task_cancelled))
             try {
-                return if (config.streaming) {
+                XLog.i(TAG, "--- LLM API调用 (轮次$iteration, 尝试${attempt + 1}/$MAX_API_RETRIES) ---")
+                XLog.i(TAG, "消息数量: ${messages.size}")
+                XLog.i(TAG, "工具规范数量: ${toolSpecs.size}")
+                
+                val startTime = System.currentTimeMillis()
+                
+                val response = if (config.streaming) {
+                    XLog.d(TAG, "使用流式模式")
                     val textBuilder = StringBuilder()
                     llmClient.chatStreaming(messages, toolSpecs, object : StreamingListener {
                         override fun onPartialText(token: String) {
                             textBuilder.append(token)
                             callback.onContent(iteration, token)
                         }
-                        override fun onComplete(response: LlmResponse) {}
-                        override fun onError(error: Throwable) {}
+                        override fun onComplete(response: LlmResponse) {
+                            val duration = System.currentTimeMillis() - startTime
+                            XLog.i(TAG, "流式响应完成，耗时: ${duration}ms")
+                            XLog.i(TAG, "========== 大模型完整回复 ==========")
+                            XLog.i(TAG, "回复文本长度: ${response.text?.length ?: 0} 字符")
+                            if (!response.text.isNullOrEmpty()) {
+                                XLog.i(TAG, "回复内容:\n${response.text}")
+                            } else {
+                                XLog.i(TAG, "回复内容为空")
+                            }
+                            if (response.hasToolExecutionRequests()) {
+                                XLog.i(TAG, "工具调用数量: ${response.toolExecutionRequests.size}")
+                                response.toolExecutionRequests.forEachIndexed { index, req ->
+                                    XLog.i(TAG, "--- 工具调用 [$index] ---")
+                                    XLog.i(TAG, "工具名称: ${req.name()}")
+                                    XLog.i(TAG, "参数: ${req.arguments()}")
+                                }
+                            } else {
+                                XLog.i(TAG, "无工具调用")
+                            }
+                            XLog.i(TAG, "====================================")
+                        }
+                        override fun onError(error: Throwable) {
+                            XLog.e(TAG, "流式响应错误: ${error.message}", error)
+                        }
                     })
                 } else {
-                    llmClient.chat(messages, toolSpecs)
+                    XLog.d(TAG, "使用非流式模式")
+                    val result = llmClient.chat(messages, toolSpecs)
+                    val duration = System.currentTimeMillis() - startTime
+                    XLog.i(TAG, "响应完成，耗时: ${duration}ms")
+                    
+                    XLog.i(TAG, "========== 大模型完整回复 ==========")
+                    XLog.i(TAG, "回复文本长度: ${result.text?.length ?: 0} 字符")
+                    if (!result.text.isNullOrEmpty()) {
+                        XLog.i(TAG, "回复内容:\n${result.text}")
+                    } else {
+                        XLog.i(TAG, "回复内容为空")
+                    }
+                    if (result.hasToolExecutionRequests()) {
+                        XLog.i(TAG, "工具调用数量: ${result.toolExecutionRequests.size}")
+                        result.toolExecutionRequests.forEachIndexed { index, req ->
+                            XLog.i(TAG, "--- 工具调用 [$index] ---")
+                            XLog.i(TAG, "工具名称: ${req.name()}")
+                            XLog.i(TAG, "参数: ${req.arguments()}")
+                        }
+                    } else {
+                        XLog.i(TAG, "无工具调用")
+                    }
+                    XLog.i(TAG, "====================================")
+                    
+                    result
                 }
+                
+                XLog.i(TAG, "LLM调用成功")
+                return response
+                
             } catch (e: Exception) {
                 lastException = e
                 val msg = e.message ?: ""
+                val duration = System.currentTimeMillis() - (System.currentTimeMillis() - 1000) // 估算
+                
                 // Token 耗尽或认证失败不重试
                 if (msg.contains("401") || msg.contains("403") || msg.contains("insufficient")) {
+                    XLog.e(TAG, "认证错误或Token不足，不重试: $msg")
                     throw e
                 }
+                
                 val delay = (Math.pow(2.0, attempt.toDouble()) * 1000).toLong()
-                XLog.w(TAG, "LLM API call failed (attempt ${attempt + 1}/$MAX_API_RETRIES), retrying in ${delay}ms: $msg")
+                XLog.w(TAG, "LLM API调用失败 (尝试 ${attempt + 1}/$MAX_API_RETRIES)")
+                XLog.w(TAG, "错误信息: $msg")
+                XLog.w(TAG, "${delay}ms 后重试...")
+                
                 try {
                     Thread.sleep(delay)
                 } catch (ie: InterruptedException) {
@@ -178,6 +254,7 @@ class DefaultAgentService : AgentService {
                 }
             }
         }
+        XLog.e(TAG, "LLM API调用在 $MAX_API_RETRIES 次尝试后仍然失败")
         throw lastException!!
     }
 
@@ -314,14 +391,22 @@ class DefaultAgentService : AgentService {
     // ==================== 主执行循环 ====================
 
     private fun runAgentLoop(userPrompt: String, callback: AgentCallback) {
+        XLog.i(TAG, "========================================")
+        XLog.i(TAG, "开始 Agent 执行循环")
+        XLog.i(TAG, "用户提示: ${userPrompt.take(100)}${if (userPrompt.length > 100) "..." else ""}")
+        XLog.i(TAG, "========================================")
+        
         // 环境预检
         preCheck()?.let {
+            XLog.e(TAG, "环境预检失败: $it")
             callback.onError(0, RuntimeException(it), 0)
             return
         }
+        XLog.i(TAG, "环境预检通过")
 
         // 构建 System Prompt（原始 + 设备上下文）
         val fullSystemPrompt = config.systemPrompt + buildDeviceContext()
+        XLog.d(TAG, "System Prompt 长度: ${fullSystemPrompt.length} 字符")
 
         val messages = mutableListOf<ChatMessage>()
         messages.add(SystemMessage.from(fullSystemPrompt))
@@ -332,10 +417,29 @@ class DefaultAgentService : AgentService {
         val maxIterations = config.maxIterations
         val loopHistory = LinkedList<RoundFingerprint>()
         var lastScreenHash = 0
+        
+        // 添加内存监控
+        val runtime = Runtime.getRuntime()
+        val initialMemory = runtime.totalMemory() - runtime.freeMemory()
 
+        XLog.i(TAG, "进入主循环，最大迭代次数: $maxIterations")
+        
         while (iterations < maxIterations && !cancelled.get()) {
             iterations++
+            XLog.i(TAG, "\n========== 第 $iterations 轮迭代 ==========")
             callback.onLoopStart(iterations)
+
+            // 检查内存使用情况，防止内存溢出导致系统不稳定
+            val currentMemory = runtime.totalMemory() - runtime.freeMemory()
+            val memoryUsedMB = (currentMemory - initialMemory) / 1024 / 1024
+            if (memoryUsedMB > 500) { // 如果额外使用超过500MB内存，警告并考虑终止
+                XLog.w(TAG, "⚠️ 内存使用过高: ${memoryUsedMB}MB，可能影响系统稳定性")
+                if (memoryUsedMB > 1000) { // 超过1GB则强制终止
+                    XLog.e(TAG, "❌ 内存使用超限，强制终止任务以防止系统崩溃")
+                    callback.onError(iterations, RuntimeException("内存使用超限，任务终止"), totalTokens)
+                    return
+                }
+            }
 
             // 发送前分级压缩历史消息，节省 token
             compressHistoryForSend(messages)
@@ -345,13 +449,16 @@ class DefaultAgentService : AgentService {
             try {
                 llmResponse = chatWithRetry(messages, callback, iterations)
             } catch (e: Exception) {
-                XLog.e(TAG, "LLM API call failed after retries", e)
+                XLog.e(TAG, "LLM API调用在重试后仍然失败", e)
                 callback.onError(iterations, RuntimeException(ClawApplication.instance.getString(R.string.agent_api_call_failed, e.message)), totalTokens)
                 return
             }
 
             // 累加 token 用量
-            llmResponse.tokenUsage?.totalTokenCount()?.let { totalTokens += it }
+            llmResponse.tokenUsage?.totalTokenCount()?.let { 
+                totalTokens += it 
+                XLog.i(TAG, "本轮Token: $it, 累计Token: $totalTokens")
+            }
 
             // 将 AI 消息添加到历史（需要构造 AiMessage）
             val aiMessage = if (llmResponse.hasToolExecutionRequests()) {
@@ -364,6 +471,33 @@ class DefaultAgentService : AgentService {
                 AiMessage.from(llmResponse.text ?: "")
             }
             messages.add(aiMessage)
+            
+            XLog.i(TAG, "========== AI响应详情 ==========")
+            if (!llmResponse.text.isNullOrEmpty()) {
+                XLog.i(TAG, "【思考内容】(${llmResponse.text.length}字符):")
+                XLog.i(TAG, llmResponse.text)
+            } else {
+                XLog.i(TAG, "【思考内容】无")
+            }
+            
+            if (llmResponse.hasToolExecutionRequests()) {
+                XLog.i(TAG, "【工具调用】${llmResponse.toolExecutionRequests.size}个:")
+                llmResponse.toolExecutionRequests.forEachIndexed { index, req ->
+                    XLog.i(TAG, "  工具[$index]: ${req.name()}")
+                    try {
+                        val args = req.arguments() ?: "{}"
+                        // 格式化JSON输出
+                        val jsonElement = GSON.fromJson(args, com.google.gson.JsonElement::class.java)
+                        val prettyJson = GSON.toJson(jsonElement)
+                        XLog.i(TAG, "    参数:\n$prettyJson")
+                    } catch (e: Exception) {
+                        XLog.i(TAG, "    参数: ${req.arguments()}")
+                    }
+                }
+            } else {
+                XLog.i(TAG, "【工具调用】无（任务完成）")
+            }
+            XLog.i(TAG, "==================================")
 
             // 非流式模式下推送思考内容
             if (!config.streaming && !llmResponse.text.isNullOrEmpty()) {
@@ -372,6 +506,7 @@ class DefaultAgentService : AgentService {
 
             // 如果没有工具调用，Agent 认为完成了
             if (!llmResponse.hasToolExecutionRequests()) {
+                XLog.i(TAG, "无工具调用，任务完成")
                 callback.onComplete(iterations, llmResponse.text ?: ClawApplication.instance.getString(R.string.agent_task_completed), totalTokens)
                 return
             }
@@ -379,6 +514,7 @@ class DefaultAgentService : AgentService {
             // 执行工具调用
             for (toolRequest in llmResponse.toolExecutionRequests) {
                 if (cancelled.get()) {
+                    XLog.i(TAG, "任务已取消")
                     callback.onComplete(iterations, ClawApplication.instance.getString(R.string.agent_task_cancel), totalTokens)
                     return
                 }
@@ -386,6 +522,8 @@ class DefaultAgentService : AgentService {
                 val toolName = toolRequest.name() ?: ""
                 val displayName = ToolRegistry.getInstance().getDisplayName(toolName)
                 val toolArgs = toolRequest.arguments() ?: "{}"
+                
+                XLog.i(TAG, "执行工具: $displayName ($toolName)")
                 callback.onToolCall(iterations, toolName, displayName, toolArgs)
 
                 // 解析参数
@@ -393,23 +531,35 @@ class DefaultAgentService : AgentService {
                 var params: Map<String, Any>? = try {
                     GSON.fromJson(toolArgs, mapType)
                 } catch (e: Exception) {
+                    XLog.w(TAG, "参数解析失败: ${e.message}")
                     HashMap()
                 }
                 if (params == null) params = HashMap()
 
+                XLog.d(TAG, "执行工具: $toolName")
                 val result = ToolRegistry.getInstance().executeTool(toolName, params)
                 val paramsString = if (params.isEmpty()) "" else params.toString()
+                
+                XLog.i(TAG, "工具执行结果: ${if (result.isSuccess) "成功" else "失败"}")
+                if (result.data != null) {
+                    XLog.d(TAG, "结果数据: ${result.data.take(100)}${if (result.data.length > 100) "..." else ""}")
+                }
+                if (!result.isSuccess && result.error != null) {
+                    XLog.e(TAG, "错误信息: ${result.error}")
+                }
+                
                 callback.onToolResult(iterations, toolName, displayName, paramsString, result)
 
                 // 检测到系统弹窗阻塞 → 截图通知用户并结束任务
                 if (!result.isSuccess && result.error == GetScreenInfoTool.SYSTEM_DIALOG_BLOCKED) {
-                    XLog.w(TAG, "System dialog blocked, notifying user and stopping task")
+                    XLog.w(TAG, "检测到系统弹窗阻塞")
                     callback.onSystemDialogBlocked(iterations, totalTokens)
                     return
                 }
 
                 // finish 工具 → 任务完成
                 if (toolName == "finish" && result.isSuccess) {
+                    XLog.i(TAG, "收到finish工具调用，任务完成")
                     val finishData = result.data
                     callback.onComplete(iterations, finishData ?: ClawApplication.instance.getString(R.string.agent_task_completed), totalTokens)
                     return
@@ -418,6 +568,7 @@ class DefaultAgentService : AgentService {
                 // 记录指纹用于死循环检测
                 if (toolName == "get_screen_info" && result.isSuccess && result.data != null) {
                     lastScreenHash = result.data.hashCode()
+                    XLog.d(TAG, "更新屏幕哈希: $lastScreenHash")
                 } else if (toolName.isNotEmpty() && toolName != "get_screen_info") {
                     loopHistory.addLast(RoundFingerprint(lastScreenHash, "$toolName:$toolArgs"))
                     if (loopHistory.size > LOOP_DETECT_WINDOW) {
@@ -428,12 +579,12 @@ class DefaultAgentService : AgentService {
                 // 添加工具结果到消息
                 val resultJson = GSON.toJson(result)
                 messages.add(ToolExecutionResultMessage.from(toolRequest, resultJson))
-                XLog.d(TAG, "displayName:$displayName toolName:$toolName")
+                XLog.d(TAG, "工具结果已添加到消息历史")
             }
 
             // 死循环检测
             if (isStuckInLoop(loopHistory)) {
-                XLog.w(TAG, "Dead loop detected at iteration $iterations")
+                XLog.w(TAG, "⚠️ 检测到死循环！")
                 messages.add(
                     UserMessage.from(
                         "[系统提示] 检测到你连续多轮执行了相同的操作且屏幕没有变化，你可能陷入了死循环。" +
@@ -443,12 +594,16 @@ class DefaultAgentService : AgentService {
                 )
                 loopHistory.clear()
             }
-            XLog.d(TAG, "轮数:$iterations all=$totalTokens 本轮=${llmResponse.tokenUsage?.totalTokenCount()}")
+            
+            XLog.i(TAG, "第 $iterations 轮完成 - 总Token: $totalTokens")
+            XLog.i(TAG, "==========================================\n")
         }
 
         if (cancelled.get()) {
+            XLog.i(TAG, "任务被用户取消")
             callback.onComplete(iterations, ClawApplication.instance.getString(R.string.agent_task_cancel), totalTokens)
         } else {
+            XLog.e(TAG, "达到最大迭代次数 ($maxIterations)")
             callback.onError(iterations, RuntimeException(ClawApplication.instance.getString(R.string.agent_max_iterations, maxIterations)), totalTokens)
         }
     }
